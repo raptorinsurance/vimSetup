@@ -1,0 +1,53 @@
+Host blade
+Hostname bladefvx-ajeffreys.eng.velocix.com
+User ajeffreys
+ForwardX11 yes
+
+
+Host billing
+Hostname bs1.zzz157s1.cdn
+User root
+
+Host cachecontroller
+Hostname cc1.zzz157s1.cdn
+User root
+
+Host database
+Hostname db1.zzz157s1.cdn
+User root
+
+Host delivery1
+Hostname cp1.zzz157d1.cdn
+User root
+
+Host delivery2
+Hostname cp2.zzz157d1.cdn
+User root
+
+Host monitoring
+Hostname mn1.zzz157s1.cdn
+User root
+
+Host publishing
+Hostname pb1.zzz157s1.cdn
+User root
+
+Host rotor
+Hostname dq1.zzz157s1.cdn
+User root
+
+Host storage
+Hostname cs1.zzz157s1.cdn
+User root
+
+Host testhost
+Hostname th1.zzz157d1.cdn
+User root
+
+Host utility0
+Hostname us0.zzz157s1.cdn
+User root
+
+Host utility1
+Hostname us1.zzz157s1.cdn
+User root

@@ -1,0 +1,782 @@
+# Swedish translations for PROJECT.
+# Copyright (C) 2015 ORGANIZATION
+# This file is distributed under the same license as the PROJECT project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2015.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PROJECT VERSION\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2015-02-18 13:19+0000\n"
+"PO-Revision-Date: 2015-02-13 16:48+0000\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: sv <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1)\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 0.9.6\n"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:178
+msgid "HTTP Method is not valid for this resource"
+msgstr "!HTTP Method is not valid for this resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:179
+msgid "Not permitted to use this HTTP Method on this resource"
+msgstr "!Not permitted to use this HTTP Method on this resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:181
+msgid "This resource cannot be DELETEd because another resource is linked to it"
+msgstr "!This resource cannot be DELETEd because another resource is linked to it"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:182
+msgid ""
+"This resource cannot be DELETEd because it owns a resource that is linked"
+" to from a third resource"
+msgstr ""
+"!This resource cannot be DELETEd because it owns a resource that is "
+"linked to from a third resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:184
+msgid "Content-Type cannot be modified"
+msgstr "!Content-Type cannot be modified"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:185
+msgid "Requested Content-Type is not accepted by this resource"
+msgstr "!Requested Content-Type is not accepted by this resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:187
+msgid "Invalid JSON"
+msgstr "!Invalid JSON"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:188
+msgid "Malformed query string parameter"
+msgstr "!Malformed query string parameter"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:191
+msgid "Resource is missing a required relationship"
+msgstr "!Resource is missing a required relationship"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:192
+msgid "Unrecognised relationship"
+msgstr "!Unrecognised relationship"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:193
+msgid "Resource has too many instances of a relationship"
+msgstr "!Resource has too many instances of a relationship"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:194
+msgid ""
+"Relationship is read-only (instances of relationship cannot be added, "
+"removed or modified)"
+msgstr ""
+"!Relationship is read-only (instances of relationship cannot be added, "
+"removed or modified)"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:196
+msgid "href does not exist"
+msgstr "!href does not exist"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:197
+msgid "Not permitted to link to target resource"
+msgstr "!Not permitted to link to target resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:199
+msgid "Profile is not valid for this Relationship from this resource"
+msgstr "!Profile is not valid for this Relationship from this resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:200
+msgid "Profile does not match profile of target resource"
+msgstr "!Profile does not match profile of target resource"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:202
+msgid "Resource is missing a required property"
+msgstr "!Resource is missing a required property"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:203
+msgid "Unrecognised property"
+msgstr "!Unrecognised property"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:204
+msgid "Value of property is of the wrong type"
+msgstr "!Value of property is of the wrong type"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:205
+msgid "Value of property is out of range"
+msgstr "!Value of property is out of range"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:206
+msgid ""
+"Value of property must be unique across the system and this value has "
+"already been used"
+msgstr ""
+"!Value of property must be unique across the system and this value has "
+"already been used"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:207
+msgid "Value of property is read-only"
+msgstr "!Value of property is read-only"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:209
+msgid "Unsupported or invalid filter"
+msgstr "!Unsupported or invalid filter"
+
+#: ../unapiflaskapp/unapiflaskapp/errors.py:297
+msgid "Unknown Error"
+msgstr "!Unknown Error"
+
+#: ../unapiflaskapp/unapiflaskapp/datamodel/profile_item.py:54
+msgid "Profile"
+msgstr "!Profile"
+
+#: ../unapiflaskapp/unapiflaskapp/datamodel/resource_base.py:672
+msgid "Filters must be in the format <property>,<comparator>,<value>[,value ...]"
+msgstr "!Filters must be in the format <property>,<comparator>,<value>[,value ...]"
+
+#: ../unapiflaskapp/unapiflaskapp/datamodel/resource_base.py:711
+msgid "This resource does not support filtering."
+msgstr "!This resource does not support filtering."
+
+#: ../unapiflaskapp/unapiflaskapp/datamodel/resource_base.py:722
+msgid "Invalid filter specified. See the profile document for supported filters: "
+msgstr ""
+"!Invalid filter specified. See the profile document for supported "
+"filters: "
+
+#: ../unapiflaskapp/unapiflaskapp/datamodel/root_service.py:26
+msgid "Root Service"
+msgstr "!Root Service"
+
+#: ../unapicontent/unapicontent/datamodel/content_root.py:29
+msgid "Content Root"
+msgstr "!Content Root"
+
+#: ../unapicontent/unapicontent/datamodel/docroot_collection.py:74
+msgid "Docroot Collection"
+msgstr "!Docroot Collection"
+
+#: ../unapicontent/unapicontent/datamodel/docroot_feed.py:43
+msgid "Docroot Feed"
+msgstr "!Docroot Feed"
+
+#: ../unapicontent/unapicontent/datamodel/ipblocks_collection.py:38
+msgid "IPBlocks Collection"
+msgstr "!IPBlocks Collection"
+
+#: ../unapicontent/unapicontent/datamodel/organization_collection.py:84
+#: ../unapicontent/unapicontent/datamodel/root_org_collection.py:39
+msgid "Organization Collection"
+msgstr "!Organization Collection"
+
+#: ../unapicontent/unapicontent/datamodel/site_collection.py:90
+#: ../unapicontent/unapicontent/datamodel/site_collection.py:133
+msgid "Site Collection"
+msgstr "!Site Collection"
+
+#: ../unapicontent/unapicontent/datamodel/site_feed.py:57
+#: ../unapicontent/unapicontent/datamodel/site_feed.py:99
+msgid "Site Feed"
+msgstr "!Site Feed"
+
+#: ../unapicontent/unapicontent/datamodel/site_item.py:649
+#, python-format
+msgid "The %(link)s link cannot be modified."
+msgstr "!The %(link)s link cannot be modified."
+
+#: ../unapicontent/unapicontent/datamodel/site_item.py:741
+#, python-format
+msgid ""
+"The following hostnames are already configured on other resources: "
+"%(hostnames)s"
+msgstr ""
+"!The following hostnames are already configured on other resources: \"\n"
+"\"%(hostnames)s"
+
+#: ../unapicontent/unapicontent/datamodel/site_item.py:755
+msgid "Either an Origin Docroot or Origin Server(s) must be set."
+msgstr "!Either an Origin Docroot or Origin Server(s) must be set."
+
+#: ../unapicontent/unapicontent/datamodel/site_item.py:835
+msgid "JSON Schema for Site Item"
+msgstr "!JSON Schema for Site Item"
+
+#: ../unapicontent/unapicontent/datamodel/site_template.py:60
+msgid "Site Template"
+msgstr "!Site Template"
+
+#: ../unapicontent/unapicontent/datamodel/site_template_collection.py:61
+msgid "Site Template Collection"
+msgstr "!Site Template Collection"
+
+#: ../unapicontent/unapicontent/datamodel/user_collection.py:38
+msgid "User Collection"
+msgstr "!User Collection"
+
+#: ../unapireporting/unapireporting/datamodel/report_collection.py:39
+msgid "Report Collection"
+msgstr "!Report Collection"
+
+#: ../unapireporting/unapireporting/datamodel/report_collection.py:66
+#: ../unapireporting/unapireporting/datamodel/report_item.py:680
+msgid ""
+"Reporting is currently unavailable. Please contact your system "
+"administrator if the issue persists."
+msgstr ""
+"!Reporting is currently unavailable. Please contact your system "
+"administrator if the issue persists."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:84
+msgid "Traffic analysis"
+msgstr "!Traffic analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:85
+msgid ""
+"The Traffic Analysis report is designed to give insight into the amount "
+"of data that has been served by the CDN. Filters and dimensions allow for"
+" different areas of investigation."
+msgstr ""
+"!The Traffic Analysis report is designed to give insight into the amount "
+"of data that has been served by the CDN. Filters and dimensions allow for"
+" different areas of investigation."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:98
+msgid "Request analysis"
+msgstr "!Request analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:99
+msgid ""
+"The Request Analysis report is designed to give insight into the number "
+"of HTTP requests being made to the CDN. Filters and dimensions allow for "
+"different areas of investigation."
+msgstr ""
+"!The Request Analysis report is designed to give insight into the number "
+"of HTTP requests being made to the CDN. Filters and dimensions allow for "
+"different areas of investigation."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:112
+msgid "Cache hit analysis"
+msgstr "!Cache hit analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:113
+msgid ""
+"The Cache Hit Analysis report is designed to illustrate the overall "
+"performance of the CDN by comparing the volume of content served directly"
+" from caches with the volume of content retrieved from upstream origin "
+"servers. Hit rate can be measured in terms of bytes delivered or number "
+"of requests."
+msgstr ""
+"!The Cache Hit Analysis report is designed to illustrate the overall "
+"performance of the CDN by comparing the volume of content served directly"
+" from caches with the volume of content retrieved from upstream origin "
+"servers. Hit rate can be measured in terms of bytes delivered or number "
+"of requests."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:130
+msgid "HTTP status code analysis"
+msgstr "!HTTP status code analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:131
+msgid ""
+"The HTTP Status Code Analysis report is designed to give insight into the"
+" error rate and other behaviour of the CDN and upstream origin servers. "
+"Filters and dimensions allow for different areas of investigation."
+msgstr ""
+"!The HTTP Status Code Analysis report is designed to give insight into "
+"the error rate and other behaviour of the CDN and upstream origin "
+"servers. Filters and dimensions allow for different areas of "
+"investigation."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:147
+msgid "Content popularity analysis"
+msgstr "!Content popularity analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:148
+msgid ""
+"The Content Popularity Analysis report is designed to give insight into "
+"which pieces of content are most/least popular and also about how popular"
+" each piece of content is."
+msgstr ""
+"!The Content Popularity Analysis report is designed to give insight into "
+"which pieces of content are most/least popular and also about how popular"
+" each piece of content is."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:176
+msgid "CDN tier analysis"
+msgstr "!CDN tier analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:177
+msgid ""
+"CDN Tier Analysis report provides information about how much data has "
+"traversed each tier of the CDN (acquiry, delivery and CDN-internal)."
+msgstr ""
+"!CDN Tier Analysis report provides information about how much data has "
+"traversed each tier of the CDN (acquiry, delivery and CDN-internal)."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:192
+msgid "Origin error analysis"
+msgstr "!Origin error analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:193
+msgid ""
+"Origin Error Analysis report provides information on error responses for "
+"resources acquired from origins."
+msgstr ""
+"!Origin Error Analysis report provides information on error responses for"
+" resources acquired from origins."
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:212
+msgid "Origin traffic analysis"
+msgstr "!Origin traffic analysis"
+
+#: ../unapireporting/unapireporting/datamodel/report_item.py:213
+msgid ""
+"Origin Traffic Analysis report provides information on traffic from "
+"origins."
+msgstr ""
+"!Origin Traffic Analysis report provides information on traffic from "
+"origins."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:143
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:151
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:159
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:167
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:175
+msgid "Time"
+msgstr "!Time"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:184
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:194
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:204
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:215
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:226
+msgid "Date"
+msgstr "!Date"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:589
+msgid "Delivery Appliance"
+msgstr "!Delivery Appliance"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:607
+msgid "Tier"
+msgstr "!Tier"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:632
+msgid "Sending Appliance Hostname"
+msgstr "!Sending Appliance Hostname"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:661
+msgid "Sending Appliance IP Address"
+msgstr "!Sending Appliance IP Address"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:684
+msgid "Receiving Appliance Hostname"
+msgstr "!Receiving Appliance Hostname"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:714
+msgid "Receiving Appliance IP Address"
+msgstr "!Receiving Appliance IP Address"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:738
+msgid "Network Response Success or Failure"
+msgstr "!Network Response Success or Failure"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:776
+msgid "Network Response Class"
+msgstr "!Network Response Class"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:813
+msgid "Network Response Code"
+msgstr "!Network Response Code"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:851
+msgid "Service"
+msgstr "!Service"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:865
+msgid "Object"
+msgstr "!Object"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:882
+msgid "Asset"
+msgstr "!Asset"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:898
+msgid "HTTP Success or Failure"
+msgstr "!HTTP Success or Failure"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:911
+msgid "HTTP Status Class"
+msgstr "!HTTP Status Class"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:924
+msgid "HTTP Status Code"
+msgstr "!HTTP Status Code"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:936
+msgid "Cache Hit or Miss"
+msgstr "!Cache Hit or Miss"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:949
+msgid "Cache Status"
+msgstr "!Cache Status"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1149
+#, python-format
+msgid "Job Collection for the %(report_name)s Report"
+msgstr "!Job Collection for the %(report_name)s Report"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1393
+#: ../unapireporting/unapireporting/splunk/translator.py:44
+msgid "Other"
+msgstr "!Other"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1447
+msgid ""
+"For this specific combination of filters it is not possible to return any"
+" data and no report can be run. Please consult the documentation."
+msgstr ""
+"!For this specific combination of filters it is not possible to return "
+"any data and no report can be run. Please consult the documentation."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1627
+msgid "An unknown metric was given"
+msgstr "!An unknown metric was given"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1639
+msgid "The \"{metric_label}\" metric is not supported for this report"
+msgstr "!The \"{metric_label}\" metric is not supported for this report"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1737
+msgid "The split dimension must be one of '{splits}'."
+msgstr "!The split dimension must be one of '{splits}'."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1744
+msgid "The split level must be one of '{splits}'."
+msgstr "!The split level must be one of '{splits}'."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1837
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:1869
+msgid "An unknown sub-filter was given"
+msgstr "!An unknown sub-filter was given"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2075
+msgid "The filter must be one of '{filters}'."
+msgstr "!The filter must be one of '{filters}'."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2083
+msgid "The filter values not allowed '{values}'."
+msgstr "!The filter values not allowed '{values}'."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2118
+msgid "An unknown filter was given"
+msgstr "!An unknown filter was given"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2256
+msgid "metric"
+msgstr "!metric"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2260
+msgid "report"
+msgstr "!report"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2263
+msgid "metric and time resolution"
+msgstr "!metric and time resolution"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2265
+msgid "time resolution"
+msgstr "!time resolution"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2271
+#, python-format
+msgid ""
+"Your requested time range has been shortened because the selected "
+"%(reason)s is only available from %(from_date)s."
+msgstr ""
+"!Your requested time range has been shortened because the selected "
+"%(reason)s is only available from %(from_date)s."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2369
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2376
+msgid "Invalid time is given"
+msgstr "!Invalid time is given"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2380
+msgid "The start time cannot be now"
+msgstr "!The start time cannot be now"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2382
+msgid "The start time is later than the end time"
+msgstr "!The start time is later than the end time"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2384
+msgid "The start time is in the future"
+msgstr "!The start time is in the future"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2386
+msgid "The start time is the same as the end time"
+msgstr "!The start time is the same as the end time"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2393
+msgid "This time resolution is not supported"
+msgstr "!This time resolution is not supported"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2449
+msgid "This metric is not available for this time range"
+msgstr "!This metric is not available for this time range"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2453
+msgid "This time resolution is not available for this time range"
+msgstr "!This time resolution is not available for this time range"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_collection.py:2737
+#, python-format
+msgid "Results for the %(report_name)s report"
+msgstr "!Results for the %(report_name)s report"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_feed.py:37
+msgid "Report Job Feed"
+msgstr "!Report Job Feed"
+
+#: ../unapireporting/unapireporting/datamodel/report_job_item.py:305
+msgid ""
+"Report has failed due to an internal error. Please contact your system "
+"administrator if the problem persists."
+msgstr ""
+"!Report has failed due to an internal error. Please contact your system "
+"administrator if the problem persists."
+
+#: ../unapireporting/unapireporting/datamodel/report_job_item.py:609
+msgid "JSON Schema for Report Job Item"
+msgstr "!JSON Schema for Report Job Item"
+
+#: ../unapireporting/unapireporting/datamodel/reporting_root.py:28
+msgid "Reporting Root"
+msgstr "!Reporting Root"
+
+#: ../unapireporting/unapireporting/datamodel/status_collection.py:30
+msgid "Status Collection"
+msgstr "!Status Collection"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:47
+#: ../unapireporting/unapireporting/reports/metrics.py:210
+msgid "Request count"
+msgstr "!Request count"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:64
+msgid "Bytes delivered"
+msgstr "!Bytes delivered"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:79
+#: ../unapireporting/unapireporting/reports/metrics.py:268
+msgid "B"
+msgstr "!B"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:80
+#: ../unapireporting/unapireporting/reports/metrics.py:269
+msgid "bytes"
+msgstr "!bytes"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:84
+#: ../unapireporting/unapireporting/reports/metrics.py:273
+msgid "Peak throughput (bps)"
+msgstr "!Peak throughput (bps)"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:106
+#: ../unapireporting/unapireporting/reports/metrics.py:134
+#: ../unapireporting/unapireporting/reports/metrics.py:312
+#: ../unapireporting/unapireporting/reports/metrics.py:355
+msgid "bps"
+msgstr "!bps"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:107
+#: ../unapireporting/unapireporting/reports/metrics.py:135
+#: ../unapireporting/unapireporting/reports/metrics.py:313
+#: ../unapireporting/unapireporting/reports/metrics.py:356
+msgid "bits per second"
+msgstr "!bits per second"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:111
+#: ../unapireporting/unapireporting/reports/metrics.py:317
+msgid "95th percentile throughput (bps)"
+msgstr "!95th percentile throughput (bps)"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:139
+msgid "Peak request rate (rps)"
+msgstr "!Peak request rate (rps)"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:160
+msgid "rps"
+msgstr "!rps"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:161
+msgid "requests per second"
+msgstr "!requests per second"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:165
+msgid "Unique IP address"
+msgstr "!Unique IP address"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:189
+#, fuzzy
+msgid "Peak unique IP addresses"
+msgstr "!Unique IP address"
+
+#: ../unapireporting/unapireporting/reports/metrics.py:238
+msgid "Bytes transferred"
+msgstr "!Bytes transferred"
+
+#: ../unapireporting/unapireporting/splunk/connection.py:94
+msgid "A connection to the Search Head could not be established."
+msgstr "!A connection to the Search Head could not be established."
+
+#: ../unapireporting/unapireporting/splunk/connection.py:119
+msgid "A problem occurred with the connection to the Search Head."
+msgstr "!A problem occurred with the connection to the Search Head."
+
+#: ../unapireporting/unapireporting/splunk/job_metadata.py:33
+msgid "Report Results"
+msgstr "!Report Results"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:49
+msgid "Success"
+msgstr "!Success"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:50
+msgid "Failure"
+msgstr "!Failure"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:51
+msgid "Informational 1xx"
+msgstr "!Informational 1xx"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:52
+msgid "Successful 2xx"
+msgstr "!Successful 2xx"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:53
+msgid "Redirection 3xx"
+msgstr "!Redirection 3xx"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:54
+msgid "Client Error 4xx"
+msgstr "!Client Error 4xx"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:55
+msgid "Server Error 5xx"
+msgstr "!Server Error 5xx"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:62
+msgid "Network Error"
+msgstr "!Network Error"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:63
+msgid "Non-HTTP"
+msgstr "!Non-HTTP"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:64
+msgid "Network connection successful"
+msgstr "!Network connection successful"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:65
+msgid "TCP connection refused"
+msgstr "!TCP Connection refused"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:66
+msgid "TCP connection timed out"
+msgstr "!TCP connection timed out"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:67
+msgid "Client closed connection"
+msgstr "!Client closed connection"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:68
+msgid "Server closed connection"
+msgstr "!Server closed connection"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:69
+msgid "Idle server connection"
+msgstr "!Idle server connection"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:70
+msgid "HTTP response timed out"
+msgstr "!HTTP response timed out"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:71
+msgid "Unknown network error"
+msgstr "!Unknown network error"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:72
+msgid "Unrecognised network error"
+msgstr "!Unrecognised network error"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:78
+msgid "Miss"
+msgstr "!Miss"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:79
+msgid "Hit"
+msgstr "!Hit"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:81
+msgid "Failure (bad request)"
+msgstr "!Failure (bad request)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:82
+msgid "Failure (internal error)"
+msgstr "!Failure (internal error)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:83
+msgid "Miss (not in cache)"
+msgstr "!Miss (not in cache)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:84
+msgid "Hit (from disk)"
+msgstr "!Hit (from disk)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:85
+msgid "Hit (from memory)"
+msgstr "!Hit (from memory)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:86
+msgid "Revalidated miss (cache content expired)"
+msgstr "!Revalidated miss (cache content expired)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:87
+msgid "Revalidated hit (from disk)"
+msgstr "!Revalidated hit (from disk)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:88
+msgid "Revalidated hit (from memory)"
+msgstr "!Revalidated hit (from memory)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:89
+msgid "Background fill (after byte-range miss)"
+msgstr "!Background fill (after byte-range miss)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:90
+msgid "Hit (from VxICP)"
+msgstr "!Hit (from VxICP)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:91
+msgid "BT object delivered (-)"
+msgstr "!BT object delivered (-)"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:97
+msgid "Acquiry"
+msgstr "!Acquiry"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:98
+msgid "Intermediate"
+msgstr "!Intermediate"
+
+#: ../unapireporting/unapireporting/splunk/translator.py:99
+msgid "Delivery"
+msgstr "!Delivery"
+
+#~ msgid "The following hostnames are already configured on other resources: %s, "
+#~ msgstr ""
+#~ "!The following hostnames are already "
+#~ "configured on other resources: %s, "
+

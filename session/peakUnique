@@ -1,0 +1,145 @@
+let SessionLoad = 1
+if &cp | set nocp | endif
+let s:so_save = &so | let s:siso_save = &siso | set so=0 siso=0
+let v:this_session=expand("<sfile>:p")
+silent only
+cd ~/Documents
+if expand('%') == '' && !&modified && line('$') <= 1 && getline(1) == ''
+  let s:wipebuf = bufnr('%')
+endif
+set shortmess=aoO
+badd +4 /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel/report_item.py
+badd +447 /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel/report_job_collection.py
+badd +102 /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/reports/metrics.py
+badd +6364 /homedir/ajeffreys/cachelogic/development/reporting/unapi/unittests/reporting/test_report_job_collection.py
+badd +63 splunkqueries
+badd +6 /homedir/ajeffreys/cachelogic/development/reporting/unapi/unapi/translations/sv/LC_MESSAGES/messages.po
+badd +6 /homedir/ajeffreys/cachelogic/development/reporting/unapi/unapi/messages.pot
+badd +0 /homedir/ajeffreys/cachelogic/development/reporting/unapi/pycoverage.ignore
+badd +0 /homedir/ajeffreys/cachelogic/development/reporting/unapi/htmlcov/coverage_html.js
+argglobal
+silent! argdel *
+edit /homedir/ajeffreys/cachelogic/development/reporting/unapi/unittests/reporting/test_report_job_collection.py
+set splitbelow splitright
+wincmd _ | wincmd |
+split
+1wincmd k
+wincmd _ | wincmd |
+vsplit
+1wincmd h
+wincmd w
+wincmd w
+wincmd _ | wincmd |
+vsplit
+1wincmd h
+wincmd w
+set nosplitbelow
+set nosplitright
+wincmd t
+set winheight=1 winwidth=1
+exe '1resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 1resize ' . ((&columns * 134 + 134) / 269)
+exe '2resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 2resize ' . ((&columns * 134 + 134) / 269)
+exe '3resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 3resize ' . ((&columns * 134 + 134) / 269)
+exe '4resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 4resize ' . ((&columns * 134 + 134) / 269)
+argglobal
+setlocal fdm=manual
+setlocal fde=0
+setlocal fmr={{{,}}}
+setlocal fdi=#
+setlocal fdl=0
+setlocal fml=1
+setlocal fdn=20
+setlocal fen
+silent! normal! zE
+let s:l = 6151 - ((14 * winheight(0) + 21) / 42)
+if s:l < 1 | let s:l = 1 | endif
+exe s:l
+normal! zt
+6151
+normal! 09|
+lcd /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel
+wincmd w
+argglobal
+edit /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel/report_job_collection.py
+setlocal fdm=manual
+setlocal fde=0
+setlocal fmr={{{,}}}
+setlocal fdi=#
+setlocal fdl=0
+setlocal fml=1
+setlocal fdn=20
+setlocal fen
+silent! normal! zE
+let s:l = 494 - ((20 * winheight(0) + 21) / 42)
+if s:l < 1 | let s:l = 1 | endif
+exe s:l
+normal! zt
+494
+normal! 049|
+lcd /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel
+wincmd w
+argglobal
+edit /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/reports/metrics.py
+setlocal fdm=manual
+setlocal fde=0
+setlocal fmr={{{,}}}
+setlocal fdi=#
+setlocal fdl=0
+setlocal fml=1
+setlocal fdn=20
+setlocal fen
+silent! normal! zE
+let s:l = 169 - ((10 * winheight(0) + 21) / 42)
+if s:l < 1 | let s:l = 1 | endif
+exe s:l
+normal! zt
+169
+normal! 05|
+wincmd w
+argglobal
+edit /homedir/ajeffreys/cachelogic/development/reporting/unapi/unittests/reporting/test_report_job_collection.py
+setlocal fdm=manual
+setlocal fde=0
+setlocal fmr={{{,}}}
+setlocal fdi=#
+setlocal fdl=0
+setlocal fml=1
+setlocal fdn=20
+setlocal fen
+silent! normal! zE
+let s:l = 6364 - ((20 * winheight(0) + 21) / 42)
+if s:l < 1 | let s:l = 1 | endif
+exe s:l
+normal! zt
+6364
+normal! 0
+lcd /homedir/ajeffreys/cachelogic/development/reporting/unapireporting/unapireporting/datamodel
+wincmd w
+2wincmd w
+exe '1resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 1resize ' . ((&columns * 134 + 134) / 269)
+exe '2resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 2resize ' . ((&columns * 134 + 134) / 269)
+exe '3resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 3resize ' . ((&columns * 134 + 134) / 269)
+exe '4resize ' . ((&lines * 42 + 43) / 87)
+exe 'vert 4resize ' . ((&columns * 134 + 134) / 269)
+tabnext 1
+if exists('s:wipebuf')
+  silent exe 'bwipe ' . s:wipebuf
+endif
+unlet! s:wipebuf
+set winheight=1 winwidth=20 shortmess=filnxtToO
+let s:sx = expand("<sfile>:p:r")."x.vim"
+if file_readable(s:sx)
+  exe "source " . fnameescape(s:sx)
+endif
+let &so = s:so_save | let &siso = s:siso_save
+doautoall SessionLoadPost
+let g:this_obsession = v:this_session
+unlet SessionLoad
+" vim: set ft=vim :

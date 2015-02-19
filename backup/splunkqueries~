@@ -1,0 +1,59 @@
+Explanations:
+Unique IP addresses (1 hour)
+| tstats  values(c_ip)     // Find the unique values of c_ip (IP addresses)
+as x   // Call the field 'x'
+where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)   // Matching these conditions
+by _time span=1h   // Split into hour-long buckets
+| eval x=x   // Field called 'x' with the values in the current field x (i.e., do nothing)
+| append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=1h | rename starttime as _time | fields _time | eval x=NULL ]  // Pad out the results to fill timeframe, pad with NULL value (so we have a result of 0 when there are no IP addresses)
+| timechart span=1h limit=12 dc(x) as "unique ip address"   // Get count of unique IP addresses
+| convert timeformat="%y-%m-%dt%h:%m:%sz" ctime(_time) | sort _time| rename _time as time| fillnull | fields - _* null value   // Housekeeping
+
+
+Peak request rate
+| tstats  count  //Find number of requests
+as x   //Call it x
+where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)  //Mathing these conditions
+by _time span=5m   //In 5 minute buckets
+| timechart span=5m limit=12  sum(x) as s eval(sum(x)/300) as x   // Chart the sum and rate in seconds (300 seconds in 5 minutes)
+| append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=1h | rename starttime as _time | fields _time]   // Add times so that we have at least one row in the chart for each time
+| timechart max(x) as "Peak request rate (rps)" sum(s) as #samples span=1h   // Chart max rate in a 5 min window in each hour-long segment
+| convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE  // Housekeeping
+
+
+Search queries:
+Unique IP addresses
+| tstats  values(c_ip) as x where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=1h | eval x=x | append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=1h | rename starttime as _time | fields _time | eval x=NULL ] | timechart span=1h limit=12 dc(x) as "Unique IP address"   | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+Peak request rate
+| tstats  count as x where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=5m | timechart span=5m limit=12  sum(x) as s eval(sum(x)/300) as x   | append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=1h | rename starttime as _time | fields _time] | timechart max(x) as "Peak request rate (rps)" sum(s) as #samples span=1h | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+
+
+
+Splunk query for peak unique IP addresses:
+| tstats  dc(c_ip) as x where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=5m | timechart span=5m limit=12 sum(x) as s max(x) as m| append  [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=5m | rename starttime as _time | fields _time | eval x=0] | timechart m as "Peak unique IP addresses" sum(s) as #samples span=1h | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+| tstats  dc(c_ip) as x where index="cdn_main" sourcetype=cdn_del_access earliest=02/11/2015:00:00:00 latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=5m | timechart span=5m limit=12 sum(x) as s | append  [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=5m | rename starttime as _time | fields _time | eval x=0] | timechart max(s) as "Peak unique IP addresses" sum(s) as #samples span=1h | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+
+| tstats  dc(c_ip) as x where index="cdn_main" sourcetype=cdn_del_access earliest=<start time> latest=<end time> c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=5m | timechart span=5m limit=12 sum(x) as s | append  [gentimes start=<start time> end=<end time> increment=5m | rename starttime as _time | fields _time | eval x=0] | timechart max(s) as "Peak unique IP addresses" sum(s) as #samples span=<time span> | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+
+
+
+The following query charts the max rate of unique IP addresses (i.e., maps max rate per second)
+| tstats  dc(c_ip) as x where index="cdn_main" sourcetype=cdn_del_access earliest=<start time> latest=<end time> c_vx_zone="external" (host=0 OR host=1 OR host=4)  by _time span=5m | timechart span=5m limit=12 sum(x) as s eval(sum(x)/300) as x | append  [gentimes start=<start time> end=<end time> increment=5m | rename starttime as _time | fields _time | eval x=0] | timechart max(x) as "Peak unique IP addresses per second" sum(s) as #samples span=<time span> | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time) | sort _time| rename _time as Time| fillnull | fields - _* NULL VALUE
+
+
+
+| tstats dc(c_ip) as x where index="cdn_main", sourcetype=cdn_del_access earliest=03/24/2014:00:00:00, latest=03/26/2014:00:00:00 c_vx_zone="external" (host=4 OR host=5 OR, host=2) by _time span=5m, sc_status, | lookup http_status_codes status AS sc_status OUTPUTNEW status_type, status_ok, | timechart span=5m limit=12 sum(x) as s eval(sum(x)) as x by, status_type, | append [gentimes start=03/24/2014:00:00:00 end=03/26/2014:00:00:00, increment=1h, | rename starttime as _time, | fields _time], | timechart max(x: *) as * sum(s: *) as #samples:* span=1h, | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time), | sort _time, | rename _time as Time, | fillnull, | fields - _* NULL VALUE
+
+
+| tstats dc(c_ip) as x where index="cdn_main", sourcetype=cdn_del_access earliest=02/11/2015:00:00:00, latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR host=4) by _time span=5m, sc_status | lookup http_status_codes status AS sc_status OUTPUTNEW status_type, status_ok | timechart span=5m limit=12 sum(x) as s eval(sum(x)) as x by status_type | append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00, increment=1h, | rename starttime as _time, | fields _time]| timechart max(x: *) as * sum(s: *) as #samples:* span=1h | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time), | sort _time, | rename _time as Time, | fillnull, | fields - _* NULL VALUE
+
+
+
+
+
+| tstats dc(c_ip) as x where index="cdn_main", sourcetype=cdn_del_access earliest=02/11/2015:00:00:00, latest=02/12/2015:00:00:00 c_vx_zone="external" (host=0 OR host=1 OR, host=4) by _time span=5m, sc_status, | lookup http_status_codes status AS sc_status OUTPUTNEW status_type,, status_ok, | search (status_type = "Successful 2xx" ), | timechart span=5m limit=12 sum(x) as s eval(sum(x)) as x, | append [gentimes start=02/11/2015:00:00:00 end=02/12/2015:00:00:00 increment=1h, | rename starttime as _time, | fields _time], | timechart max(x) as "Peak unique IP addresses" sum(s) as #samples, span=1h, | convert timeformat="%Y-%m-%dT%H:%M:%SZ" ctime(_time), | sort _time, | rename _time as Time, | fillnull, | fields - _* NULL VALUE

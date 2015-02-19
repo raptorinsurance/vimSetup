@@ -1,0 +1,2772 @@
+"""@package unapireporting.datamodel.report_job_collection
+Report Job Collection - The collection of all report jobs for owning report,
+also used to initiate (run) a report job."""
+
+# Standard library
+import logging
+from datetime import datetime
+from calendar import timegm
+from functools import partial
+from itertools import product
+
+# 3rd party
+import flask
+from flaskext.babel import gettext, lazy_gettext, format_datetime
+
+# Unified Network API
+from unapicommon.definitions import Profiles, JsonKeys, LinkRel
+from unapiflaskapp.errors import PropertyValueError, UnrecognisedProperty
+from unapiserverlib import cdndb
+from unapicommon.date_calculator import calculate_relative_time_from_now
+
+# UNAPI Splunk
+from unapireporting.splunk.job_metadata import JobMetadata
+from unapireporting.splunk.connection import SplunkService, saved_search_available
+from unapireporting.splunk.index_retention import IndexRetention
+from unapireporting.splunk.results_processor import SAMPLE_LABEL
+
+from unapireporting.reports.metrics import METRIC_CONFIGURATION
+
+# UNAPI Datamodel
+from unapiflaskapp.datamodel.formats import SPLUNK_DATE_FORMAT, ISO_8601_DATE_FORMAT
+import report_base
+from unapiflaskapp.datamodel import json_schema_item
+import report_item
+import report_job_item
+
+logger = logging.getLogger(__name__)
+
+
+## The summary index is assumed to finish 3 (whole) days in the past.
+# This index supports faster searches, further in the past at a lower time
+# resolution. The summary index is generated every day for the time period
+# between 2 and 3 days ago. We wait at least 2 days for data to arrive to allow
+# for network partitions and server faults to be corrected because once a
+# summary index is generated there is no easy method for it to be regenerated to
+# include late arriving data. We then assume that it doesn't take more than 1
+# day for the summary index data to be generated.
+#
+# @verbatim
+#  | Available |In-progress|           |           |           |
+#  |___________|___________|___________|___________|______+____|
+# -4d         -3d         -2d         -1d         -0d    Now
+# @endverbatim
+SUMMARY_INDEX_FINISH = "3days"
+
+## The saved search data is assumed to begin 7 (whole) days in the past.
+# This supports time resolutions of 1 hour and less and is faster than the main
+# index but not as fast as the summary index.
+SAVED_SEARCH_BEGIN = "7days"
+
+## The saved search data is assumed to finish 2 (whole) hours in the past.
+# The saved search is generated every hour for the last 7 days but can only be
+# reliably used when it is 2 hours old. When this data is generated we should
+# have waited at least 1 hour for data to arrive as the Splunk forwarders take
+# at least 5 minutes to forward and we should allow some grace period for
+# servers being disconnected. We then assume that it doesn't take more than 1
+# hour for the saved search data to be generated.
+#
+# @verbatim
+#  | Available |In-progress|           |           |
+#  |___________|___________|___________|______+____|
+# -3h         -2h         -1h         -0h    Now
+# @endverbatim
+SAVED_SEARCH_FINISH = "2hours"
+
+## Time resolution in the tstat query of the main index.
+# This is to ensure that for lower resolutions the time buckets used in the
+# tstat query are not longer than 1 day despite the time resolution being lower,
+# e.g. 1 week. If these longer time resolutions are used by the tstat query then
+# the data returned from that query can be put into the wrong bucket when the
+# time chart is created. This seems to occur because the boundaries used by the
+# summary index query and tstat query of the main index work independently which
+# means a different bucket boundary for each one. So by forcing minimum of a 1
+# day resolution for the tstat query means that the time chart part of the query
+# will put the tstat data into the correct bucket when it aggregates the data.
+TSTAT_TIME_RESOLUTION = "tstatTimeResolution"
+
+## Format of a date only value to add to the Splunk query.
+SPLUNK_DATE_RESULTS_FORMAT = "%Y-%m-%d"
+
+## Snap to key
+SNAP_TO = "snapTo"
+
+## Index resolution key
+# This indicates which indexes can be used.
+INDEX_RESOLUTION = "indexResolution"
+
+## Index resolution value - Low resolution can use the Summary Index.
+# A query using a low time resolution will use the Summary Index in preference,
+# falling back to the Saved Search and then the Main Index only if needed.
+LOW_RESOLUTION = "low"
+
+## Index resolution value - Medium resolution can use the Saved Search.
+# A query using a medium time resolution will use the Saved Search in
+# preference, falling back to the Main Index if needed.
+MEDIUM_RESOLUTION = "medium"
+
+## Index resolution value - High resolution can only use the Main Index.
+HIGH_RESOLUTION = "high"
+
+## Map time resolution syntax to Splunk Query syntax.
+# The key is the time resolution syntax used in JSON schema, the values include
+# the following information:
+# - Splunk query time resolution
+# - Split label i.e. name of series
+# - Date or time format to use in the results
+# - Splunk query time resolution
+# - Whether or not a high time resolution is required
+# - The relative time to snap the start time to for use as earliest_time
+#   parameter for the create method of the Splunk API
+#
+# @note The @c span parameter does not officially support @c quarter and @c
+#       year is not supported at all as of Splunk v6.0.2
+#
+# @note The split label is used as a key to localise the date/time format when
+#       the results are post processed.
+TIME_RESOLUTION_LOOKUP = {
+    JsonKeys.TIME_RESOLUTION_NONE: {
+        # None uses a time span which is supported by the summary index although
+        # only the total values will be used this simplifies the query.
+        JsonKeys.TIME_RESOLUTION: '1d',
+        TSTAT_TIME_RESOLUTION: '1d',
+        # Set the split label to Total so there is a sensible value if a split
+        # was not configured.
+        JsonKeys.SPLIT_LABEL: None,
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0minutes"
+    },
+    JsonKeys.TIME_RESOLUTION_1_MINUTE: {
+        JsonKeys.TIME_RESOLUTION: '1min',
+        TSTAT_TIME_RESOLUTION: '1min',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Time"),
+        # High resolution means only the main index can be used.
+        INDEX_RESOLUTION: HIGH_RESOLUTION,
+        SNAP_TO: "1minuteSnap"
+    },
+    JsonKeys.TIME_RESOLUTION_5_MINUTES: {
+        JsonKeys.TIME_RESOLUTION: '5min',
+        TSTAT_TIME_RESOLUTION: '5min',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Time"),
+        # High resolution means only the main index can be used.
+        INDEX_RESOLUTION: HIGH_RESOLUTION,
+        SNAP_TO: "5minuteSnap"
+    },
+    JsonKeys.TIME_RESOLUTION_15_MINUTES: {
+        JsonKeys.TIME_RESOLUTION: '15min',
+        TSTAT_TIME_RESOLUTION: '15min',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Time"),
+        # High resolution means only the main index can be used.
+        INDEX_RESOLUTION: HIGH_RESOLUTION,
+        SNAP_TO: "15minuteSnap"
+    },
+    JsonKeys.TIME_RESOLUTION_30_MINUTES: {
+        JsonKeys.TIME_RESOLUTION: '30min',
+        TSTAT_TIME_RESOLUTION: '30min',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Time"),
+        # High resolution means only the main index can be used.
+        INDEX_RESOLUTION: HIGH_RESOLUTION,
+        SNAP_TO: "30minuteSnap"
+    },
+    JsonKeys.TIME_RESOLUTION_1_HOUR: {
+        JsonKeys.TIME_RESOLUTION: '1h',
+        TSTAT_TIME_RESOLUTION: '1h',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Time"),
+        # Medium resolution means the saved search can be used along with the
+        # main index.
+        INDEX_RESOLUTION: MEDIUM_RESOLUTION,
+        SNAP_TO: "0hours"
+    },
+    JsonKeys.TIME_RESOLUTION_1_DAY: {
+        JsonKeys.TIME_RESOLUTION: '1d',
+        TSTAT_TIME_RESOLUTION: '1d',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Date"),
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0days"
+    },
+    JsonKeys.TIME_RESOLUTION_1_WEEK: {
+        JsonKeys.TIME_RESOLUTION: '1w',
+        # Ensure tstat query uses a day resolution to ensure that the data is
+        # put into the correct week bucket.
+        TSTAT_TIME_RESOLUTION: '1d',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Date"),
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0weeks"
+    },
+    JsonKeys.TIME_RESOLUTION_1_MONTH: {
+        JsonKeys.TIME_RESOLUTION: '1mon',
+        # Ensure tstat query uses a day resolution to ensure that the data is
+        # put into the correct month bucket.
+        TSTAT_TIME_RESOLUTION: '1d',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Date"),
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0months"
+    },
+    # The 'span' parameter does not officially support 'quarter' syntax
+    JsonKeys.TIME_RESOLUTION_1_QUARTER: {
+        JsonKeys.TIME_RESOLUTION: '3mon',
+        # Ensure tstat query uses a day resolution to ensure that the data is
+        # put into the correct quarter bucket.
+        TSTAT_TIME_RESOLUTION: '1d',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Date"),
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0quarters"
+    },
+    # The 'span' parameter does not support 'year' syntax
+    JsonKeys.TIME_RESOLUTION_1_YEAR: {
+        JsonKeys.TIME_RESOLUTION: '12mon',
+        # Ensure tstat query uses a day resolution to ensure that the data is
+        # put into the correct year bucket.
+        TSTAT_TIME_RESOLUTION: '1d',
+        JsonKeys.SPLIT_LABEL: lazy_gettext("Date"),
+        # Use low resolution time to use the summary index if possible.
+        INDEX_RESOLUTION: LOW_RESOLUTION,
+        SNAP_TO: "0years"
+    },
+}
+
+
+## Lookup command to get the extra status_type or status_ok fields
+# Part of a splunk query.
+HTTP_STATUS_LOOKUP = '| lookup http_status_codes status AS sc_status OUTPUTNEW status_type, status_ok '
+
+
+## Lookup for cache_hit field (unrecognised dispositions are considered as a miss)
+# Part of a splunk query.
+CACHE_STATUS_LOOKUP = '| lookup cache_disposition s_cachestatus OUTPUTNEW cache_hit ' \
+                      '| eval cache_hit = if(cache_hit == "N/A", 0, cache_hit) '
+
+
+## Lookup processing for network status information.
+# The network status is either the network *failure*, or the HTTP status code.
+# Part of the splunk query.
+NETWORK_STATUS_LOOKUP = (
+    # HTTP status codes for cdn_del_access
+    '| lookup http_status_codes status AS sc_status OUTPUTNEW '
+    '  status_type AS access_status_type, status_ok AS access_status_ok '
+    # HTTP status codes for cdn_del_acquisition
+    '| lookup http_status_codes status AS rs_status OUTPUTNEW '
+    '  status_type AS http_status_type, status_ok AS http_status_ok'
+    # combine access and acquisition HTTP status results into one value
+    # If no HTTP status is known, default to Non-HTTP / Success
+    '| eval http_status_type = coalesce('
+    '    http_status_type, access_status_type, "Non-HTTP") '
+    '| eval http_status_ok = coalesce('
+    '    http_status_ok, access_status_ok, "Success")'
+    '| eval http_status_code = coalesce('
+    '    rs_status, sc_status, "Non-HTTP")'
+    # extract the receiver status from the s_flags field
+    '| eval receiver_network_status=substr(s_flags, 1, 1) '
+    # No sflags field means the network connection was successful
+    '| fillnull value="-" receiver_network_status '
+    # The r code means we want to see the HTTP status, not the network error
+    '| eval receiver_network_status ='
+    '  if(receiver_network_status == "r", "-", receiver_network_status)'
+    # Look up the status title, type and class for the network status
+    '| lookup network_status_codes status AS receiver_network_status OUTPUTNEW'
+    '  status_title AS network_status_title, '
+    '  status_type AS network_status_type, status_ok AS network_status_ok'
+    # If the lookup failed we have an unrecognised error code
+    '| fillnull value="Unrecognised network error" network_status_title '
+    '| fillnull value="Network Error" network_status_type '
+    '| fillnull value="Failure" network_status_ok '
+    # If the connection was successful the status is determined by the HTTP
+    # status instead. This is the final status type / class
+    '| eval status_type ='
+    'if(receiver_network_status == "-", http_status_type, network_status_type)'
+    '| eval status_ok ='
+    'if(receiver_network_status == "-", http_status_ok, network_status_ok)'
+    '| eval status_code ='
+    'if(receiver_network_status == "-", http_status_code, network_status_title)'
+)
+
+
+## Lookup for extra cs_path field
+# Part of a splunk query.
+CONTENT_ASSET_LOOKUP = (
+    # Extract the path part of the URL
+    '| eval cs_path=replace(cs_uri,"http[s]?://.*?/","/") '
+    # Run the lookup and get the extra fields
+    '| LOOKUP object_reporting_paths object AS x_vx_serial, path AS cs_path'
+    '  OUTPUT path AS cs_object_path, object AS cs_object, id as cs_object_id, original_path as original_path '
+    # Only select the ones that match one of the reporting paths
+    '| search cs_object_path=* '
+    '| eval cs_object_path=mvindex(cs_object_path, 0) '
+    '| eval cs_object=mvindex(cs_object, 0) '
+    '| eval cs_object_id=mvindex(cs_object_id, 0) '
+    '| eval original_path=mvindex(original_path, 0) '
+    # The save original path without a leading slash and possible trailing slash
+    '| rex field=original_path "^[/]?(?P<original_without_slash>.*?)(?P<last_char_slash>[/]?)$" '
+    # Split the original path without start and end slash into segments
+    '| eval cs_report_mv=split(original_without_slash, "/") '
+    # Count how many segments there are
+    '| eval report_depth=(mvcount(cs_report_mv)) '
+    # Split the given URL in segments
+    '| eval uri_parts = split(cs_uri, "/") '
+    # Get as many segments as there were in the given reporting path
+    '| eval asset = mvindex(uri_parts, 2, report_depth+2) '
+    # Join the selected segments
+    '| eval asset = mvjoin(asset, "/") + last_char_slash '
+)
+
+
+## Query Template in the main index.
+# This query template is used for peak queries as well; the sample_metric slot
+# is then filled and time resolution is fixed to 5 minutes.
+QUERY_MAIN_INDEX = (
+    'tstats {mi_sample_metric} {mi_metric} as x '
+    'where index="cdn_main" sourcetype={mi_sourcetype} '
+    # Add the start and end time
+    'earliest={main_start_time} latest={main_end_time} '
+    # Filter so only specific CDN tiers are included
+    '{mi_zones} '
+    # Which organizations do we return the results for
+    '{customer_restriction} '
+    # Additional arbitrary where clauses to be set by individual splits
+    '{mi_where} '
+    # Group by time (note this is different from the time resolution used by the
+    # chart to ensure the correct buckets are used) and the split (if any)
+    # requested.
+    'by _time span={tstat_time_resolution}{mi_split} '
+    # Field grouping, normally required when splitting on different field names
+    # in the access and acquiry logs.
+    '{mi_field_grouping}'
+)
+
+
+## The postfix template for the Splunk query of the Main Index.
+QUERY_MAIN_INDEX_POSTFIX = (
+    # Scale the units if needed, for example if we're returning bytes these may
+    # have to be converted to GB
+    '| eval x=x{unit_scale} '
+    # Lookup the fields used in the split (if any)
+    '{split_lookup}'
+    # Our filter criteria (if any)
+    '{filter}'
+)
+
+
+## The template for the Splunk summation query of the Saved Search.
+SUM_QUERY_SAVED_SEARCH = (
+    # Load the previously run saved search
+    'loadjob savedsearch="admin:cdn_reporting:Saved Search By Hour 7 Days Ago" '
+    # "earliest" and "latest" can't be used on a saved search so use the _time
+    # field and epoch time values
+    '| search _time>={saved_search_start_time} _time<{saved_search_end_time} '
+    # Exclude intra cdn traffic
+    '{access_zones} '
+    # Restrict to the allowed customers and matching the given filter
+    '{customer_restriction} {summary_filter} '
+    # Generate the statistics, split by time and optional split
+    '| stats {summary_metric} as x by _time {chart_split} '
+    # Scale the units if needed, for example if we're returning bytes these may
+    # have to be converted to GB
+    '| eval x=x{unit_scale} '
+)
+
+
+## The template for the Splunk summation query of the Summary Index.
+SUM_QUERY_SUMMARY_INDEX = (
+    # Search in the cdn_summary index and exclude intra cdn traffic
+    'search index=cdn_summary '
+    # Exclude intra cdn traffic
+    '{access_zones} '
+    # Restrict to the allowed customers and matching the given filter
+    '{summary_customer_restriction} {summary_filter} '
+    # Add the start and end time
+    'earliest={summary_start_time} latest={summary_end_time} '
+    # Generate the statistics, split by time and optional split
+    '| stats {summary_metric} as x by _time {summary_chart_split} '
+    # Scale the units if needed, for example if we're returning bytes these may
+    # have to be converted to GB
+    '| eval x=x{unit_scale} '
+    # The orig_host field in the summary index stores the host
+    '| rename orig_host as host '
+)
+
+
+## The query template to tabulate the results into a time chart.
+SUM_QUERY_TIME_CHART = (
+    # If there isn't any data at the start or end of the date range this won't
+    # be shown unless we fill in the missing times
+    '| append ['
+    # Add in times at the resolution required
+    'gentimes start={chart_start_time} end={chart_end_time} increment={time_resolution} '
+    # Rename the gentimes field (starttime) to the standard _time so
+    # timechart will use it when sorting.
+    '| rename starttime as _time | fields _time '
+    # Add in a zero metric (0 values to sum) or NULL (more benign
+    # value for distinct_count) and optionally a NULL split value
+    # so timechart doesn't throw the new times away.
+    '| eval x={gentimes_value} {gentime_split}'
+    '] '
+    # Tabularise the results as a time chart, limiting to the given split limit
+    '| timechart span={time_resolution} limit={split_limit} {stat_func}(x) as '
+    '"{metric_label}" {split_command} {chart_split} '
+)
+
+
+## The query template to tabulate the results based on a split without a time
+# resolution.
+SUM_QUERY_SPLIT_CHART = (
+    # Tabularise the results as a chart with the field names as the split
+    '| chart limit={split_limit} {stat_func}(x) as x by {chart_split} '
+    # Remove NULL values and empty strings which are introduced when splitting
+    # by a dimension which isn't always defined in the data e.g. Asset.
+    '| where isnotnull({chart_split}) and len(tostring({chart_split}))>0 '
+)
+
+## The query template to tabulate the results if there isn't a time resolution
+# or split. This just generates a single total value.
+SUM_QUERY_TOTAL_CHART = (
+    # Simply sum all the values for the requested metric
+    '| chart limit={split_limit} {stat_func}(x) as "{metric_label}"'
+)
+
+
+## The postfix template for Splunk peak rate queries.
+# This is used after @ref QUERY_MAIN_INDEX
+PEAK_QUERY_POSTFIX = (
+    # Lookup the fields used in the split (if any)
+    '{split_lookup}'
+    # Our filter criteria (if any)
+    '{filter}'
+)
+
+
+## The query template to tabulate the peak results into a time chart.
+# @sa QUERY_MAIN_INDEX
+# @sa PEAK_QUERY_POSTFIX
+# @sa PEAK_QUERY_TIME_CHART_NO_SPLIT_POSTFIX
+# @sa PEAK_QUERY_TIME_CHART_SPLIT_POSTFIX
+PEAK_QUERY_TIME_CHART = (
+    # Tabularise the results, limiting to the given split limit. The eval
+    # clause is to sum over the 5 minutes and then apply any unit scale which,
+    # for example, could convert to a per second metric.  Also take a sum of
+    # the number of samples contributing to the dataset
+    '| timechart span=5m limit={split_limit}  sum({sample_id}) as '
+    's eval(sum(x){unit_scale}) as x {split_command} {chart_split} '
+    # If there isn't any data at the start or end of the date range this won't
+    # be shown unless we fill in the missing times
+    '| append [gentimes start={chart_start_time} end={chart_end_time} '
+    'increment={time_resolution} | rename starttime as _time | fields _time] '
+)
+
+## The query template to create a timechart of the peak results without a split.
+# @sa PEAK_QUERY_TIME_CHART
+PEAK_QUERY_TIME_CHART_NO_SPLIT_POSTFIX = (
+    # Select the maximum or 95th percentile value in the selected time period
+    # and sum the number of samples for each time slice.
+    # Also give the column titles their proper labels
+    '| timechart {stat_func}(x) as "{metric_label}" sum(s) as {sample_label} span={time_resolution} '
+)
+
+## The query template to create a timechart of the peak results with a split.
+# @sa PEAK_QUERY_TIME_CHART
+PEAK_QUERY_TIME_CHART_SPLIT_POSTFIX = (
+    # Select the maximum or 95th percentile value in the selected time period,
+    # we also remove the max() or perc() from the column name. Note that a wild
+    # card value is used as it may either be a single value (x) or the split ID.
+    # Splunk auto inserts a space after the colon in the field name so remove
+    # that too. Also sum the number of samples for each time slice and split.
+    '| timechart {stat_func}(x: *) as * sum(s: *) as {sample_label}:* span={time_resolution} '
+)
+
+
+## The query template to tabulate the peak results based on a split without a
+# time resolution.
+# @sa QUERY_MAIN_INDEX
+# @sa PEAK_QUERY_POSTFIX
+PEAK_QUERY_SPLIT_CHART = (
+    # Use eventstats to combine add all the data points together that make up
+    # the 5 minute slices and group by time and the split.
+    # If the "sample_id" is x (when a count is used) then the sum({sample_id})
+    # will not work as eventstats will not do the same operation twice. This is
+    # ok as when a request count is used x will contain the sample size and the
+    # next chart query part will pick up either "x" or the "s" variable.
+    '| eventstats sum({sample_id}) as s sum(x) as x by _time, {chart_split}'
+    # Create a chart of the maximum or 95th percentile values in each of the 5
+    # minutes slices. The eval clause applies a unit scale which, for example,
+    # could convert to a per second metric by dividing by 300 (5mins * 60
+    # seconds).  Also sum the number of samples for a statistical analysis.
+    '| chart limit={split_limit} sum({sample_id}) as s eval({stat_func}(x){unit_scale}) as x by {chart_split}'
+)
+
+## The query template to tabulate the results if there isn't a time resolution
+# or split. This generates a single value which is maximum of all peaks.
+PEAK_QUERY_TOTAL_CHART = (
+    # Use eventstats to combine add all the data points together that make up
+    # the 5 minute slices and group by time.
+    # If the "sample_id" is x (when a count is used) then the sum({sample_id})
+    # will not work as eventstats will not do the same operation twice. This is
+    # ok as when a request count is used x will contain the sample size and the
+    # next chart query part will pick up either "x" or the "s" variable.
+    '| eventstats sum({sample_id}) as s sum(x) as x by _time'
+    # Create a chart of the maximum or 95th percentile values in each of the 5
+    # minutes slices. The eval clause applies a unit scale which, for example,
+    # could convert to a per second metric by dividing by 300 (5mins * 60
+    # seconds).  Also sum the number of samples for a statistical analysis.
+    '| chart limit={split_limit} sum({sample_id}) as {sample_label} '
+    'eval({stat_func}(x){unit_scale}) as "{metric_label}"'
+)
+
+
+## The query template to limit results for a split without a time
+# resolution.
+SPLIT_CHART_POSTFIX = (
+    # Order by the metric label in descending order
+    '| sort - x '
+    # Add a row number (prefix with an underscore so it gets deleted later)
+    '| streamstats count as _row_number '
+    # Override the existing field called {chart_split} so that it contains
+    # the original value (when the row number is lower than or equal to the
+    # split limit) or "Other" (when the row number is higher than the split
+    # limit). When zero is given as a split limit then we always use the
+    # original value.
+    '| eval {chart_split}=if(0 = {split_limit} or _row_number <= {split_limit},'
+    ' {chart_split}, "{translation_of_other}") '
+    # Sum by chart_split : this will sum all the values for Other
+    '| stats sum(*) as * by {chart_split} '
+    # Rename the metric, the samples if present (peak queries only) and the
+    # chart split to match the split label
+    '| rename x as "{metric_label}", s as {sample_label} {chart_split} as "{split_label}"'
+)
+
+
+## The query template applied to time chart queries to tidy up time and dates.
+TIME_CHART_POSTFIX = (
+    # Convert the _time field to an expected format
+    '| convert timeformat="{time_format}" ctime(_time) '
+    # Sort by time
+    '| sort _time'
+    # Rename _time as 'Time' or 'Date' as appropriate for the format
+    '| rename _time as {time_label}'
+)
+
+## Applied to all queries
+QUERY_POSTFIX = (
+    # Fill fields that have no value with 0
+    '| fillnull '
+    # Strip out all the internal fields such as _span and _spandate, also remove
+    # the NULL field that may have been introduced by gentimes and the VALUE
+    # field that gets introduced when splitting by a dimension which isn't
+    # defined e.g. Asset.
+    '| fields - _* NULL VALUE'
+)
+
+
+## Dynamic apsects of the Splunk query which vary by split dimension/level.
+# - split_label - localised the name of the split, also used in the query.
+# - saved_search - defines whether or not this split is included in the saved
+#                  search.
+#                  Default: True
+# - query_config - the dynamic parts of the query inserted into the template.
+#   - tstat_queries - One or more dictionaries qualifying how data should be
+#                     grouped. Multiple entries per sourcetype are permitted.
+#     - mi_sourcetype - to which sourcetype do these parameters apply.
+#     - mi_split - List of Splunk fields on which to split.
+#     - mi_where - Optional splunk search query to qualify this query.
+#     - mi_field_grouping - Splunk eval statement to group fields together or
+#                           rename them in order to split.
+#     - network_response_classes - used only for the network response filter
+#                                  to optimise queries; each tstat query should
+#                                  list one or more of 'non_http', 'http' and
+#                                  'network_error' to indicate what type of
+#                                  events the tstat query returns.
+#   - chart_split - Splunk field to use as the split in the chart.
+#   - summary_chart_split - Splunk field to use as the split in the summary
+#                           chart, if not defined the chart_split will be used.
+#   - split_lookup - a lookup that needs to be performed to get additional
+#                    fields. The lookup might not be necessary in which case it
+#                    does not need to be defined here.
+SPLIT_CONFIGURATION = {
+    JsonKeys.SPLIT_BY_NETWORK_DELIVERY_APPLIANCE: {
+        'split_label': lambda: gettext('Delivery Appliance'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['s_dns'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_split': ['s_dns'],
+                },
+            ],
+            'chart_split': 's_dns',
+        }
+    },
+    # We need to split by the c_vx_zone in the access logs and r_vx_zone in the
+    # acquiry logs.
+    JsonKeys.SPLIT_BY_NETWORK_TIER: {
+        'split_label': lambda: gettext('Tier'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['c_vx_zone'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_split': ['r_vx_zone'],
+                    # The acquiry log data is grouped into two zones, the first
+                    # for intra-cdn traffic and the other for acquiry from an
+                    # Origin (internal or external to the CDN). This zone is
+                    # pushed into the zone used by the cdn_del_access source
+                    # type as a new value.
+                    'mi_field_grouping': (
+                        '| eval c_vx_zone = if(r_vx_zone == "cdn", "cdn", "acquiry")'),
+                },
+            ],
+            'chart_split': 'c_vx_zone',
+        }
+    },
+
+    JsonKeys.SPLIT_BY_NETWORK_SENDING_APPLIANCE_HOSTNAME: {
+        'split_label': lambda: gettext('Sending Appliance Hostname'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    # The sending appliance in the access log will be the
+                    # server itself
+                    'mi_split': ['s_dns', 's_ip'],
+                    'mi_field_grouping': (
+                        '| eval hostname=if(s_dns=="None", s_ip, s_dns)'),
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # The sending appliance in the acquiry log will be the
+                    # remote server
+                    'mi_split': ['r_dns', 'r_ip'],
+                    # If the hostname is not in the DNS field fall back to IP
+                    # Address and use this as the hostname.
+                    # Note: coalesce cannot be used as the value is not
+                    # actually null.
+                    'mi_field_grouping': (
+                        '| eval hostname=if(r_dns=="None", r_ip, r_dns)'),
+                },
+            ],
+            'chart_split': 'hostname',
+        }
+    },
+    JsonKeys.SPLIT_BY_NETWORK_SENDING_APPLIANCE_IP_ADDRESS: {
+        'split_label': lambda: gettext('Sending Appliance IP Address'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    # The sending appliance in the access log will be the
+                    # server itself
+                    'mi_split': ['s_ip'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # The sending appliance in the acquiry log will be the
+                    # remote server
+                    'mi_split': ['r_ip'],
+                    # Rename remote IP as server IP for split.
+                    'mi_field_grouping': '| eval s_ip=r_ip',
+                },
+            ],
+            'chart_split': 's_ip',
+        }
+    },
+    JsonKeys.SPLIT_BY_NETWORK_RECEIVING_APPLIANCE_HOSTNAME: {
+        'split_label': lambda: gettext('Receiving Appliance Hostname'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    # The recieving appliance in the access log will be the end
+                    # client. Unfortunately the client hostname isn't known so
+                    # we fall back to the Client IP address.
+                    'mi_split': ['c_ip'],
+                    # Rename client IP as hostname for split.
+                    'mi_field_grouping': '| eval hostname=c_ip',
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # The recieving appliance in the acquiry log will be the
+                    # server itself
+                    'mi_split': ['s_dns', 's_ip'],
+                    # If the hostname is not in the DNS field fall back to IP
+                    # Address and use this as the hostname.
+                    # Note: coalesce cannot be used as the value is not
+                    # actually null.
+                    'mi_field_grouping': (
+                        '| eval hostname=if(s_dns=="None", s_ip, s_dns)'),
+                },
+            ],
+            'chart_split': 'hostname',
+        }
+    },
+    JsonKeys.SPLIT_BY_NETWORK_RECEIVING_APPLIANCE_IP_ADDRESS: {
+        'split_label': lambda: gettext('Receiving Appliance IP Address'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    # The recieving appliance in the access log will be the end
+                    # client
+                    'mi_split': ['c_ip'],
+                    # Rename client IP as server IP for split.
+                    'mi_field_grouping': '| eval s_ip=c_ip',
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # The recieving appliance in the acquiry log will be the
+                    # server itself
+                    'mi_split': ['s_ip'],
+                },
+            ],
+            'chart_split': 's_ip',
+        }
+    },
+
+    JsonKeys.SPLIT_BY_NETWORK_RESPONSE_SUCCESS_FAILURE: {
+        'split_label': lambda: gettext('Network Response Success or Failure'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                    'network_response_classes': ['http'],
+                },
+                {
+                    # include events without an sc_status field; the
+                    # split_lookup will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_where': 'NOT sc_status="*"',
+                    'mi_split': [],
+                    'network_response_classes': ['non_http'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_split': ['s_flags', 'rs_status'],
+                    'network_response_classes': ['http', 'network_error'],
+                },
+                {
+                    # include events without an s_flags field; the split_lookup
+                    # will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_where': 'NOT s_flags="*"',
+                    'mi_split': ['rs_status'],
+                    'network_response_classes': ['http'],
+                },
+            ],
+            'chart_split': 'status_ok',
+            'split_lookup': NETWORK_STATUS_LOOKUP,
+        },
+    },
+
+    # TODO: rename to NETWORK_REPONSE_CLASS
+    JsonKeys.SPLIT_BY_NETWORK_RESPONSE_CODE_CLASS: {
+        'split_label': lambda: gettext('Network Response Class'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                    'network_response_classes': ['http'],
+                },
+                {
+                    # include events without an sc_status field; the
+                    # split_lookup will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_where': 'NOT sc_status="*"',
+                    'mi_split': [],
+                    'network_response_classes': ['non_http'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_split': ['s_flags', 'rs_status'],
+                    'network_response_classes': ['http', 'network_error'],
+                },
+                {
+                    # include events without an s_flags field; the split_lookup
+                    # will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_where': 'NOT s_flags="*"',
+                    'mi_split': ['rs_status'],
+                    'network_response_classes': ['http'],
+                },
+            ],
+            'chart_split': 'status_type',
+            'split_lookup': NETWORK_STATUS_LOOKUP,
+        },
+    },
+
+    JsonKeys.SPLIT_BY_NETWORK_RESPONSE_CODE: {
+        'split_label': lambda: gettext('Network Response Code'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                    'network_response_classes': ['http'],
+                },
+                {
+                    # include events without an sc_status field; the
+                    # split_lookup will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_where': 'NOT sc_status="*"',
+                    'mi_split': [],
+                    'network_response_classes': ['non_http'],
+                },
+                {
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_split': ['s_flags', 'rs_status'],
+                    'network_response_classes': ['http', 'network_error'],
+                },
+                {
+                    # include events without an s_flags field; the split_lookup
+                    # will fill in a default for these.
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    'mi_where': 'NOT s_flags="*"',
+                    'mi_split': ['rs_status'],
+                    'network_response_classes': ['http'],
+                },
+            ],
+            'chart_split': 'status_code',
+            'split_lookup': NETWORK_STATUS_LOOKUP,
+        },
+    },
+
+    # We want to show log lines that do not have a customer_id field.
+    JsonKeys.SPLIT_BY_ORG_SERVICE: {
+        'split_label': lambda: gettext('Service'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['host'],
+                },
+            ],
+            'chart_split': 'host',
+            # host is automatically renamed orig_host in the summary index
+            'summary_chart_split': 'orig_host',
+        }
+    },
+    JsonKeys.SPLIT_BY_CONTENT_OBJECT: {
+        'split_label': lambda: gettext('Object'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['x_vx_serial'],
+                },
+            ],
+            'chart_split': 'x_vx_serial',
+        }
+    },
+    # The Asset split dimension is not supported by the saved search
+    # due to the number of unique values for cs_uri (used to
+    # determine the Asset) meaning that the saved search becomes
+    # very large and takes too long to run. Therefore this split can
+    # only use the Main and Summary Indexes.
+    JsonKeys.SPLIT_BY_CONTENT_ASSET: {
+        'split_label': lambda: gettext('Asset'),
+        'saved_search': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['cs_uri', 'x_vx_serial'],
+                },
+            ],
+            'chart_split': 'asset',
+            'split_lookup': CONTENT_ASSET_LOOKUP
+        }
+    },
+    # RTMP requests do not have a status_ok, status_type or sc_status
+    # field so they should not be shown.
+    JsonKeys.SPLIT_BY_HTTP_STATUS_SUCCESS_FAILURE: {
+        'split_label': lambda: gettext('HTTP Success or Failure'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                },
+            ],
+            'chart_split': 'status_ok',
+            'split_lookup': HTTP_STATUS_LOOKUP
+        }
+    },
+    JsonKeys.SPLIT_BY_HTTP_STATUS_CODE_CLASS: {
+        'split_label': lambda: gettext('HTTP Status Class'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                },
+            ],
+            'chart_split': 'status_type',
+            'split_lookup': HTTP_STATUS_LOOKUP
+        }
+    },
+    JsonKeys.SPLIT_BY_HTTP_STATUS_CODE: {
+        'split_label': lambda: gettext('HTTP Status Code'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['sc_status'],
+                },
+            ],
+            'chart_split': 'sc_status',
+        }
+    },
+    JsonKeys.SPLIT_BY_CACHE_STATUS_HIT: {
+        'split_label': lambda: gettext('Cache Hit or Miss'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['s_cachestatus'],
+                },
+            ],
+            'chart_split': 'cache_hit',
+            'split_lookup': CACHE_STATUS_LOOKUP
+        }
+    },
+    JsonKeys.SPLIT_BY_CACHE_STATUS_DISPOSITION: {
+        'split_label': lambda: gettext('Cache Status'),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_split': ['s_cachestatus'],
+                },
+            ],
+            'chart_split': 's_cachestatus',
+        }
+    }
+}
+
+
+def get_subfilters(fltr):
+    """Generate a list of available filter values
+
+    @param fltr - a dict of single filter as specified in the reporting pack
+    @return a list of all keys and values in the given dict
+    """
+    if not isinstance(fltr, dict):
+        return fltr
+    return fltr.keys() + [
+        f for sub in fltr.values() for f in get_subfilters(sub)]
+
+
+def get_absolute_time(given_date, now):
+    """return absolute time
+
+    @param given_date - date in absolute or relative format
+    @param now - the value of now to use
+    @throws ValueError if an invalid time is given
+    @return An absolute time as a @c datetime.datetime instance
+    """
+    logger.debug("given_date %r", given_date)
+    try:
+        value = datetime.strptime(given_date, ISO_8601_DATE_FORMAT)
+    except ValueError:
+        if given_date == 'now':
+            value = now
+        else:
+            value = calculate_relative_time_from_now(given_date, now)
+    return value
+
+
+def combine_dicts(*d, **kw):
+    """Combine dictionaries into one.
+
+    Keys in later dictionaries override those in earlier dictionaries, with
+    keyword arguments being applied last.
+
+    @param d - 1 or more dictionaries
+    @param kw - 0 or more keyword parameters, applied as one last dictionry
+    @return One combined dictionary
+
+    """
+    return reduce(lambda d1, d2: dict(d1, **d2), d + (kw,))
+
+
+def _combine_single_tstat_query(base, to_merge):
+    """Merge tstat query configurations
+
+    A default set of keys is applied, and all keys are copied over from to_merge
+    to base, except for @c mi_split (combined with duplicates removed) and
+    @c mi_field_grouping (concatenated).
+
+    @param base - tstat query configuration to merge into
+    @param to_merge - tstat query configuration to add to base
+
+    @return new merged tstat query configuration.
+
+    """
+    query = {
+        'mi_split': [],
+        'mi_where': '',
+        'mi_field_grouping': ''
+    }
+    query.update(base)
+
+    query['mi_field_grouping'] += to_merge.get('mi_field_grouping', '')
+    # Filter unique fields while preserving order. We should use an OrderedDict
+    # here instead when upgrading to Python 2.7 or newer. Set trick from
+    # http://stackoverflow.com/q/480214
+    seen = set()
+    query['mi_split'] = [
+        f for f in query['mi_split'] + to_merge.get('mi_split', [])
+        if not (f in seen or seen.add(f))]
+
+    query.update((k, v) for k, v in to_merge.iteritems()
+                 if k not in ('mi_split', 'mi_field_grouping'))
+    return query
+
+
+def _combine_tstat_queries(base, to_merge):
+    """Produce the product of tstats query configurations
+
+    @param base - list of query configurations used as base to merge into, their
+                  order is preserved.
+    @param to_merge - the list of query configuartions to merge in.
+
+    Configurations are matched by their sourcetype.
+
+    @return A new list of query configurations, the product of the two inputs
+
+    """
+    # Why do we need to multiply tstats configurations?
+    #
+    # Say a metric needs to deal with counting events by two different
+    # fields (because not all events have the same fields). If you then
+    # apply a split that also has to deal with events with missing fields
+    # (which again requires 2 tstat queries, one with and one without the
+    # missing field) you'll need to apply 4 different tstat queries and
+    # append all results:
+    #
+    # metric contrived example, all for the same sourcetype:
+    #     {'mi_metric': 'sum(sc_frobnar)', 'mi_sourcetype': "foo"},
+    #     {'mi_metric': 'sum(rc_bazbaz)', 'mi_sourcetype': "foo"}
+    # split contrived example, all for the same sourcetype:
+    #     {'mi_split': ['s_spam'], mi_sourcetype': "foo"},
+    #     {'mi_split': ['s_eggs'], 'mi_where': 'NOT s_spam="*"',
+    #      'mi_sourcetype': "foo"}
+    #
+    # together should produce the queries
+    #     | tstats sum(sc_frobnar) where sourcetype="foo"
+    #              by _time span=1d, s_spam
+    #     | tstats sum(sc_frobnar) sourcetype="foo" where ... NOT s_spam="*"
+    #              by _time span=1d, s_eggs
+    #     | tstats sum(rc_bazbaz) where ... by _time span=1d, s_spam
+    #     | tstats sum(rc_bazbaz) where ... NOT s_spam="*"
+    #              by _time span=1d, s_eggs
+    #
+    # The same rules apply to combining filter splits and the chart split
+
+    # A separate list is used to preserve the original sourcetype ordering
+    # while still grouping per-sourcetype queries together. In Python 2.7
+    # or newer, the list and dictionary could be combined with an
+    # OrderedDict.
+    sourcetype_order = []
+    base_per_sourcetype = {}
+    for query in base:
+        query_sourcetype = query['mi_sourcetype']
+        if query_sourcetype not in base_per_sourcetype:
+            base_per_sourcetype[query_sourcetype] = [query]
+            sourcetype_order.append(query_sourcetype)
+        else:
+            base_per_sourcetype[query_sourcetype].append(query)
+
+    to_merge_per_sourcetype = {}
+    for q in to_merge:
+        to_merge_per_sourcetype.setdefault(q['mi_sourcetype'], []).append(q)
+
+    return [
+        _combine_single_tstat_query(base_query, to_merge_query)
+        for sourcetype in sourcetype_order
+        for base_query, to_merge_query in product(
+            base_per_sourcetype[sourcetype],
+            # if no to_merge query has been defined for this specific
+            # sourcetype, use a list with one empty dict to effectively multiply
+            # the metric query by 1.
+            to_merge_per_sourcetype.get(sourcetype, [{}]))]
+
+
+class ReportJobCollection(report_base.ReportBase):
+    """Report Job Collection - used to run a report.
+    This class handles the following:
+    - POSTs to run reports via Splunk.
+    - GETting a representation in JSON of objects of this class.
+    - The generation of links to items of the class.
+    """
+
+    ## Resource profile or type
+    profile = Profiles.REPORT_JOB_COLLECTION
+
+    ## The route function which handles the specific resource profile/type
+    route_function = "report_job_collection"
+
+    ## The profile that can be be POSTed to this profile
+    post_profile = report_job_item.ReportJobItem
+
+    def __init__(self, **kwargs):
+        """Construct an object with a splunk job metadata"""
+        super(ReportJobCollection, self).__init__(**kwargs)
+
+        ## Instance of a Splunk Job Metadata.
+        # Build the metadata as we go when we handle a POST
+        self.metadata = JobMetadata()
+
+    def populate_object(self):
+        """Populate the resource if the report specified is supported.
+        @throws HTTPException - HTTP 404 if report cannot be run.
+        """
+
+        if self._owner_instance is None:
+            self._owner_instance = report_item.ReportItem(**self.resource_id)
+
+        self.reporting_pack = self._owner_instance._reporting_pack
+        self.report_definition = self._owner_instance.report_definition
+
+        # Create title with the translated report name
+        self.title = gettext("Job Collection for the %(report_name)s Report",
+                             report_name=self.report_definition[JsonKeys.TITLE]())
+
+    def render_resource(self):
+        """Minimal resource for the report run command.
+        @note Reading of the report run resource is only support as it is more
+        difficult to create a special case. There is no information here except
+        a link to the owner and a title."""
+
+        # Add link to owner
+        self.add_owner_link(report_item.ReportItem, self.path_id)
+
+        # Add affordance link to indicate which reports can be run.
+        self.add_link(LinkRel.CREATE, self)
+
+        # Add link to the JSON Schema resource that describes how to POST to
+        # this resource, i.e. run a report
+        self.add_link(LinkRel.DESCRIBED_BY,
+                      json_schema_item.JsonSchemaItem,
+                      report_job_item.ReportJobItem.JSON_SCHEMA_ID)
+
+        # Search for jobs which are only for this user and report.
+        filter_str = 'custom.user_id=\\"%s\\" AND custom.report_id=\\"%s\\"' % (
+            flask.g.auth_user, self.path_id)
+        with SplunkService() as service:
+            for job in service.jobs.iter(search=filter_str):
+                metadata = JobMetadata.load_from_splunk_job(job)
+                # The search string should stop other users' jobs and jobs for
+                # other reports from being returned, however check the retrieved
+                # metadata to be sure we only expose a job if it is for this
+                # user and report.
+                if metadata is not None and metadata.report_id == self.path_id:
+                    # We can pass in all the data needed by the report job so it
+                    # doesn't have to make a round trip to the Splunk server.
+                    self.add_link(LinkRel.OWNS, report_job_item.ReportJobItem,
+                                  job.name, data=(job, metadata))
+
+    def _get_user_details(self):
+        """Retrieve user details for the current user.
+
+        Reuses already-retrieved user details from the report item, if
+        available.
+
+        @return a @ref unapiserverlib.cdndb.UserDetail item.
+
+        """
+        user_details = self._owner_instance._user_details
+        if user_details is None:
+            db = self.get_cdn_db()
+            user_details = db.get_user_details(db.get_username())
+        return user_details
+
+    def _get_param_value(self, parameters, json_key):
+        """Get a parameter value or the report default if not present.
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @param json_key - the parameter JSON key for which the value is required.
+        @return The value in the parameters or the default value for this report.
+        """
+        return parameters.get(json_key, self.report_definition[json_key])
+
+    def _combine_split_filter_parameters(
+            self, query_config, split_config, filter_splits):
+        """Combine the metric tstats configuration with the split and filters.
+
+        Metrics create specific tstat queries, with splits potentially adding
+        more such queries to produce the desired groupings. Filters are at their
+        heart splits to include the values on which to filter out results.
+
+        In order to process some filters there may need to be an intermediate
+        split in the data before being combined in the chart section of the
+        query. Addtionally there are the actual splits which should be present
+        in the final data (which obviously also require the intermediate split).
+
+        First the split and filters are merged, then the merged configuration is
+        merged with the metric tstats configuration.
+
+        @param query_config - the full query configuration built so far
+        @param split_config - the tstats configurations required for the split
+        @param filter_splits - splits dictated by the filters
+
+        @c query_config is altered in-place.
+
+        """
+
+        # Merge split and filters.
+
+        # The per-filter split lookups must be merged together into one
+        lookups = set(f['split_lookup'] for f in filter_splits
+                      if 'split_lookup' in f)
+        if query_config['split_lookup']:
+            # add lookup already added by _generate_split
+            lookups.add(query_config['split_lookup'])
+        query_config['split_lookup'] = ' '.join(lookups)
+
+        # the remaining filter_split information, outside of the tstats
+        # configuration, is of no interest to the rest of the code. Simplify
+        # the code by removing a layer from the structure.
+        filter_splits = [f['tstats_queries'] for f in filter_splits]
+
+        # If a specific split config is used by both the split and one of the
+        # filters, it can be removed. This allows us to avoid the case where
+        # we later try to matrix multiply a split and filter that would
+        # otherwise produce the exact same splits
+        filter_splits = [f for f in filter_splits if f != split_config]
+
+        # Currently we support only **one** split or filter with more than one
+        # tstat query per sourcetype; how to merge multiple such queries is
+        # left for another time. The limitation is not enforced, but noted
+        # for future expansion.
+
+        if not split_config and filter_splits:
+            # we have no split set, take the first filter split as a base
+            split_config, filter_splits = filter_splits[0], filter_splits[1:]
+
+        for filter_config in filter_splits:
+            split_config = _combine_tstat_queries(split_config, filter_config)
+
+        # now that the split and filters have been combined, update the
+        # metric query configuration with the result
+        query_config['tstats_queries'] = _combine_tstat_queries(
+            query_config['tstats_queries'], split_config)
+
+        # Finally, combine the `mi_split` fields into a string
+        for query in query_config['tstats_queries']:
+            query_splits = ', '.join(query['mi_split'])
+            # The tstats split goes after 'by _time span=1d, '; prepend with a
+            # comma
+            query['mi_split'] = ', ' + query_splits if query_splits else ''
+
+    def _add_query(self, existing_query, new_query):
+        """Add a query to an new or existing query string.
+        If the index query alread contains a query then the new query must be
+        appended, otherwise it will simply be the first query string.
+        @param existing_query - existing query template.
+        @param new_query - new query template to add.
+        @return Updated existing query which incorporates the new query.
+        """
+        if existing_query:
+            # Append new search query
+            return '%s| append [ %s ]' % (existing_query, new_query)
+        else:
+            # Create new search query
+            return new_query
+
+    def _build_search_query(self, parameters):
+        """Build the Splunk search query from the request parameters.
+
+        @par Summing Metrics.
+        For summing metrics, the following combinations of queries can be used,
+        which are then followed by one of the charting query combinations:
+        - @c QUERY_MAIN_INDEX
+        - @c QUERY_MAIN_INDEX + @ref SUM_QUERY_SAVED_SEARCH
+        - @c QUERY_MAIN_INDEX + @ref SUM_QUERY_SAVED_SEARCH + @ref QUERY_MAIN_INDEX
+        - @c QUERY_MAIN_INDEX + @ref SUM_QUERY_SAVED_SEARCH + @ref QUERY_SUMMARY_INDEX
+        - @ref SUM_QUERY_SAVED_SEARCH
+        - @ref SUM_QUERY_SAVED_SEARCH + @ref SUM_QUERY_SUMMARY_INDEX
+        - @ref SUM_QUERY_SUMMARY_INDEX
+
+        Where @c QUERY_MAIN_INDEX is made up from one of the following:
+        - @ref QUERY_MAIN_INDEX (+) +
+          @ref QUERY_MAIN_INDEX_POSTFIX
+
+        and @c (+) indicates parts that can be repeated.
+
+        <TABLE>
+        <CAPTION>Sum Metrics (bytes delivered and request count)</CAPTION>
+        <TR><TH> Time Split </TH><TH> Chart Split </TH><TH> Chart Query Templates </TH></TR>
+        <TR><TD> Yes </TD><TD> N/A </TD>
+            <TD> @ref SUM_QUERY_TIME_CHART + @ref TIME_CHART_POSTFIX + @ref QUERY_POSTFIX </TD></TR>
+        <TR><TD> No  </TD><TD> Yes </TD>
+            <TD> @ref SUM_QUERY_SPLIT_CHART + @ref SPLIT_CHART_POSTFIX + @ref QUERY_POSTFIX </TD></TR>
+        <TR><TD> No  </TD><TD> No  </TD><TD> @ref SUM_QUERY_TOTAL_CHART </TD></TR>
+        </TABLE>
+
+        @par Peak Rate Metrics.
+        The summary index doesn't have sufficient information to support a peak
+        query so only a tstat query is supported.
+
+        When the peak rate metrics are being calculated they determine the peak
+        by summing the bytes delivered or number of requests in 5 minute slices.
+        The time resolution used in the report takes the maximum value of all
+        the 5 minute slices and returns the maximum value (or peak) for each
+        time period in the results set, e.g. if the time resolution was 1 hour
+        the peak would be the highest value of all the five minute slices in
+        that hour.
+
+        Where splits are concerned the peak is calculated by summing all events
+        which fall into the appropriate categories in that 5 minute slice. For
+        example, if splitting by HTTP status code class, the peak request rate
+        for HTTP 2xx will be the sum of all events resulting in HTTP status
+        codes from 200 to 299. Then the process of determining the maximum value
+        is determined as before.
+
+        This method of summing also applies to the "Other" category. For
+        example, if splitting by HTTP status code the categories with the lowest
+        values may be grouped together, such as HTTP 500 and HTTP 403. In this
+        case the peak request rate for "Other" will be the sum of all events
+        resulting in HTTP status codes 500 and 403. It is possible that this
+        other category will have higher values then the non-grouped categories.
+
+        For rate metrics, only a main index query can be used, which is then
+        followed by one of the charting query combinations:
+        - @c PEAK_QUERY
+
+        Where @c PEAK_QUERY is made up from one of the following:
+        - @ref QUERY_MAIN_INDEX (+) +
+          @ref PEAK_QUERY_POSTFIX
+
+        and @c (+) indicates parts that can be repeated.
+
+        <TABLE>
+        <CAPTION>Peak Rate Metrics (peak throughput and peak request rate)</CAPTION>
+        <TR><TH> Time Split </TH><TH> Chart Split </TH><TH> Chart Query Templates </TH></TR>
+        <TR><TD> Yes </TD><TD> N/A </TD>
+            <TD> @ref PEAK_QUERY_TIME_CHART + @ref TIME_CHART_POSTFIX + @ref QUERY_POSTFIX </TD></TR>
+        <TR><TD> No  </TD><TD> Yes </TD>
+            <TD> @ref PEAK_QUERY_SPLIT_CHART + @ref SPLIT_CHART_POSTFIX + @ref QUERY_POSTFIX </TD></TR>
+        <TR><TD> No  </TD><TD> No  </TD><TD> @ref PEAK_QUERY_TOTAL_CHART </TD></TR>
+        </TABLE>
+
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @return A tuple with a string containing the splunk search query string to be run
+                and a dictionary containing parameters used in formatting the query.
+        @throws ApiBadRequest subclass if parameters are invalid.
+        @throws HTTPException - HTTP 401 if report cannot be run by current user
+        (e.g. because this user has no roles that provide access to Service
+        Customers)
+        @todo We have to be very careful to avoid the Splunk equivalent of SQL
+        injection because Splunk do not provide the equivalent of
+        mysql_real_escape_string or similar. We should build our own such
+        function to avoid mistakes which make us vulnerable to "Splunk
+        Injection" attacks. This <a
+        href="http://docs.splunk.com/Documentation/Splunk/6.0/Search/Aboutsearchlanguagesyntax#Quotes_and_escaping_characters">Splunk
+        document</a> explains how to quote and escape characters in searches.
+        """
+
+        # Build this dictionary of keys to be formatted into the query
+        # string template. Based off parameters supplied in the request (e.g.
+        # start and end times) and also on the user's identity (e.g. the list of
+        # customer ids which this user is allowed to see data for).
+        query_config = {
+            'splunk_date_format': SPLUNK_DATE_FORMAT,
+            'sample_label': SAMPLE_LABEL,
+            'translation_of_other': gettext('Other')
+        }
+
+        # Determine the metric to be used; we want to validate the metric first
+        # before validating the filters and split choices to ensure the error
+        # messages make sense.
+        # The metric choice also may effect the time parameter handling as peak
+        # queries require a high time resolution from the main index.
+        query_config.update(self._generate_metric(parameters))
+
+        query_config.update(self._generate_split_limit(parameters))
+        query_config.update(self._build_customer_restriction(parameters))
+        split_config, split_parts = self._generate_split(parameters)
+        query_config.update(split_parts)
+
+        filter_splits, optimisations, filter_parts = self._generate_filter(
+            parameters, query_config)
+        query_config.update(filter_parts)
+
+        # Both filters and splits need to add to and expand the tstats queries
+        # to produce the right splits. Combine these into the query config.
+        self._combine_split_filter_parameters(
+            query_config, split_config, filter_splits)
+
+        # _generate_split and _generate_metric should be called before
+        # _parse_time_parameters to define whether or not the saved search can
+        # be used. _generate_split also defines the split label that may need to
+        # be set to Time or Date if a time split has been requested.
+        query_config.update(self._parse_time_parameters(parameters))
+
+        # Extract the chart split from the query parts
+        chart_split = query_config['chart_split']
+
+        # The split command 'by' is only needed in some parts of the query if
+        # there is an actual split.
+        query_config['split_command'] = 'by' if chart_split else ''
+
+        # We need to populate null values for the split (if there is one) so
+        # that the time chart does not throw away the generated times.
+        query_config['gentime_split'] = '| eval %s=NULL' % chart_split if chart_split else ''
+
+        # Run filter optimisations to remove any tstat query parts that are
+        # obsolete now
+        tstats_query_parts = query_config.pop('tstats_queries')
+        for optimisation in optimisations:
+            tstats_query_parts = optimisation(tstats_query_parts)
+
+        # We must be applying at least one query; if not the user picked a
+        # combination of filters that exclude one another, like filtering on
+        # the Delivery CDN tier + Network response errors (which only occur
+        # in the Acquiry CDN tier).
+        if not tstats_query_parts:
+            raise PropertyValueError(
+                [JsonKeys.FILTER_BY],
+                gettext(
+                    'For this specific combination of filters it is not '
+                    'possible to return any data and no report can be run. '
+                    'Please consult the documentation.'))
+
+        # Once it is known which zones are to be queried generate the zone
+        # filter query part. This results in a series of OR-joined tests, like
+        # <tt>r_vx_zone="external" OR r_vx_zone="cdn"</tt>. The zone field name
+        # is taken from the @c zones_field parameter.
+        for query in tstats_query_parts:
+            query['mi_zones'] = ' OR '.join([
+                '{0}="{1}"'.format(query['mi_zones_field'], z)
+                for z in query['mi_zones']])
+
+        # Saved search and summary index queries need to know what
+        # cdn_del_access zones are used.
+        # Pick the *first* such zone entry (they are all the same for
+        # each source type), or use an empty string if not present
+        access_zones = next((q['mi_zones'] for q in tstats_query_parts
+                             if q['mi_sourcetype'] == 'cdn_del_access'),
+                            '')
+
+        # The query will include a combined Splunk search query which
+        # includes all sourcetypes and indexes required for the report.
+        # The query postfix is used as a template to have all formatting
+        # arguments applied in one go.
+        query = ''
+
+        if self._peak_query:  # Create a query for a peak metric
+            # For a peak query only the main index is used.
+            for tstats_query in tstats_query_parts:
+                query = self._add_query(query, QUERY_MAIN_INDEX.format(
+                    # peak queries are grouped by 5 minute slice
+                    **combine_dicts(
+                        tstats_query, query_config, tstat_time_resolution='5m')))
+
+            # Now append the query postfix which is common to both source types.
+            query_postfix = PEAK_QUERY_POSTFIX
+
+            # If there is a time split then use a time chart
+            if self._time_split:
+                query_postfix += PEAK_QUERY_TIME_CHART
+                # Two different chart queries are needed depending on whether
+                # there is a split or not.
+                if chart_split:
+                    query_postfix += PEAK_QUERY_TIME_CHART_SPLIT_POSTFIX
+                else:
+                    query_postfix += PEAK_QUERY_TIME_CHART_NO_SPLIT_POSTFIX
+                query_postfix += TIME_CHART_POSTFIX
+
+            # If a time resolution of "noTimeSplit" was requested use a chart
+            # which takes the maximum of all the values.
+            else:
+                # Two different chart queries are needed depending on whether
+                # there is a split or not.
+                if chart_split:
+                    query_postfix += PEAK_QUERY_SPLIT_CHART + SPLIT_CHART_POSTFIX
+                else:
+                    query_postfix += PEAK_QUERY_TOTAL_CHART
+
+            query += query_postfix.format(**query_config)
+
+        else:  # Create a query for a standard metric
+            # We must be querying at least one index
+            assert(self._use_main_index or self._use_summary_index or self._use_saved_search)
+
+            # If using the main index (we may be using other indexes as well)
+            if self._use_main_index:
+                # Start with the tstat query of the main index
+                for tstats_query in tstats_query_parts:
+                    query = self._add_query(
+                        query, QUERY_MAIN_INDEX.format(
+                            **combine_dicts(tstats_query, query_config)))
+
+                # Now append the main query postfix which is common to both
+                # source types. Note this is used as the basis of a second main
+                # index query if needed.
+                query += QUERY_MAIN_INDEX_POSTFIX.format(**query_config)
+
+            # The saved search is being used
+            if self._use_saved_search:
+                assert access_zones, (
+                    "All access zones have been filtered out but we are "
+                    "attempting to use a saved search.")
+                query = self._add_query(
+                    query, SUM_QUERY_SAVED_SEARCH.format(
+                        access_zones=access_zones, **query_config))
+
+            # The summary index query is being used
+            if self._use_summary_index:
+                assert access_zones, (
+                    "All access zones have been filtered out but we are "
+                    "attempting to use a summary index.")
+                query = self._add_query(
+                    query, SUM_QUERY_SUMMARY_INDEX.format(
+                        access_zones=access_zones, **query_config))
+
+            # Append the seconds main index query if needed
+            if self._use_main_index_twice:
+                # The second main index query if used is the same as the first
+                # but using a different start and stop time.
+                for tstats_query in tstats_query_parts:
+                    parts = combine_dicts(
+                        tstats_query, query_config,
+                        main_start_time=query_config['main_start_time2'],
+                        main_end_time=query_config['main_end_time2'],
+                    )
+                    query = self._add_query(
+                        query, QUERY_MAIN_INDEX.format(**parts))
+
+                query += QUERY_MAIN_INDEX_POSTFIX.format(**query_config)
+
+            query_postfix = ''
+
+            # If there is a time split then use a time chart
+            if self._time_split:
+                query_postfix += SUM_QUERY_TIME_CHART + TIME_CHART_POSTFIX
+            # If a time resolution of "noTimeSplit" was requested use a chart
+            # which sums all the values.
+            else:
+                # Two different chart queries are needed depending on whether
+                # there is a split or not.
+                if chart_split:
+                    query_postfix += SUM_QUERY_SPLIT_CHART + SPLIT_CHART_POSTFIX
+                else:
+                    query_postfix += SUM_QUERY_TOTAL_CHART
+
+            query += query_postfix.format(**query_config)
+
+        # If the query starts with "tstats" or "loadjob" then the search string
+        # needs a leading pipe for some reason only known to Splunk.
+        if query.startswith('tstats') or query.startswith('loadjob'):
+            query = '| ' + query
+
+        # Add in the post fix which fills in the blanks and removes internal
+        # fields.
+        query += QUERY_POSTFIX.format(**query_config)
+
+        return query, query_config
+
+    def _generate_split_limit(self, parameters):
+        """Define the split limit parameter.
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @return A dict containing a 'split_limit' key, whose value is the raw Splunk
+                query part defining the split limit being used.
+        """
+        split_limit = self._get_param_value(parameters, JsonKeys.SPLIT_LIMIT)
+        self.metadata.split_limit = split_limit
+        return {'split_limit': split_limit}
+
+    def _generate_metric(self, parameters):
+        """Define the metric parameter, either number of bytes or request count.
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @throws PropertyValueError if an unsupported metric is given.
+        @return A dict containing query_config which are dependent on the metric
+                being used.
+        """
+
+        # Get metric parameter, use the report default if not provided
+        given_metric = self._get_param_value(parameters, JsonKeys.METRIC)
+
+        # Set the defaults for the optional query part definitions, see
+        # METRIC_CONFIGURATION for a definition of the fields.
+        query_config = {
+            'sample_id': '',
+            'unit_scale': '',
+            'summary_metric': '',
+            # An eval clause is used to generate fake zero metrics for summing
+            # timecharts so we have the correct date range.
+            'gentimes_value': 0,
+        }
+
+        try:
+            metric_config = METRIC_CONFIGURATION[given_metric]
+        except KeyError:
+            # In normal operation this should not occur as this should be
+            # handled by the JSON schema validation.
+            raise PropertyValueError([JsonKeys.METRIC],
+                                     gettext("An unknown metric was given"))
+
+        # Ensure the metric label is localised by deferring the invocation of
+        # get_text until here when the language is known,
+        metric_label = metric_config["metric_label"]()
+
+        # Does this reporting pack *support* this metric at all?
+        available_metrics = (
+            self.reporting_pack[JsonKeys.METRICS_DETAILED] +
+            self.reporting_pack[JsonKeys.METRICS_SUMMARY])
+        if given_metric not in available_metrics:
+            raise PropertyValueError(
+                [JsonKeys.METRIC], gettext(
+                    u'The "{metric_label}" metric is not supported for this '
+                    u'report').format(metric_label=metric_label))
+
+        ## Define whether or not a peak query is being used.
+        # Peak queries require a high time resolution and a different query
+        # string to be processed.
+        self._peak_query = metric_config.get("peak_query", False)
+
+        ## Define whether or not the metric is in the saved search.
+        # Most metrics are included in the saved search but some are only in the
+        # Summary and Main indexes due to the time required to process the
+        # additional metric.
+        self._metric_in_saved_search = metric_config.get("saved_search", True)
+
+        ## Define whether or not the metric is in the summary index.
+        # Most metrics are included in the summary index but some are
+        # explicitly excluded from the saved search and summary index (e.g. the
+        # acquiry logs).
+        self._metric_in_summary_index = metric_config.get(
+            "summary_index", True)
+
+        # Fill out all the non-default values from the metric configuration
+        query_config.update(metric_config["query_config"])
+        query_config['metric_label'] = metric_label
+
+        # Fill out tstat query defaults
+        default_tstat_query = {
+            'mi_field_grouping': '',
+            'mi_metric': '',
+            'mi_sample_metric': '',
+            'mi_split': [],
+            'mi_where': '',
+            'mi_zones': (),
+        }
+        query_config['tstats_queries'] = [
+            dict(default_tstat_query, **tq)
+            for tq in query_config['tstats_queries']]
+
+        # Save report parameters and chart y-axis label for extraction in the
+        # report job item.
+        self.metadata.metric = given_metric
+        self.metadata.metric_label = metric_label
+
+        return query_config
+
+    def _generate_split(self, parameters):
+        """Add the split parameter (if any).
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @throws UnrecognisedProperty if an unsupported split group is given.
+        @throws PropertyValueError if an unsupported split level is given.
+        @return A tuple consisting of:
+                - a list of tstats configurations the split, to
+                  be combined with the metric and filter configurations.
+                - A dict containing query_config which are dependent on the
+                  split being used.
+        """
+
+        ## Define whether or not the split is in the saved search.
+        # Most splits are included in the saved search but some are only in the
+        # Summary and Main indexes due to the time required to process the
+        # additional split which is normally due to the number of unique values.
+        # This value is defined on a per split basis in the split_mapping
+        # dictionary.
+        self._split_in_saved_search = True
+
+        # Get metric parameter, use the report default if not provided
+        given_split_by_dict = self._get_param_value(parameters, JsonKeys.SPLIT_BY)
+
+        # Set the defaults for the optional query part definitions, see
+        # SPLIT_CONFIGURATION for a definition of the fields.
+        query_config = {
+            'chart_split': '',
+            'split_label': '',
+            'summary_chart_split': '',
+            'split_lookup': '',
+        }
+
+        # If the split is none or empty
+        if not given_split_by_dict:
+            return (), query_config
+
+        # Get the available splits for this reporting pack
+        get_splits_function = self.reporting_pack[JsonKeys.SPLIT_BY]
+        available_splits = get_splits_function(self._get_user_details())
+
+        # Get the split group and split level given
+        split_group, split_level = given_split_by_dict.items()[0]
+
+        # Check that the split dimension is supported by this reporting pack
+        try:
+            available_split_levels = available_splits[split_group]
+        except KeyError:
+            # Sorting keys from available_splits due to we are checking
+            # exception message in unit tests
+            raise UnrecognisedProperty(
+                [JsonKeys.SPLIT_BY],
+                gettext(u"The split dimension must be one of '{splits}'.").format(
+                    splits="', '".join(sorted(available_splits))))
+
+        # Check that the split level is supported by this reporting pack
+        if split_level not in available_split_levels:
+            raise PropertyValueError(
+                [JsonKeys.SPLIT_BY, split_group],
+                gettext(u"The split level must be one of '{splits}'.").format(
+                    splits="', '".join(available_split_levels)))
+
+        # Get the configuration for this split level
+        split_config = SPLIT_CONFIGURATION[split_level]
+
+        # Whether or not this split is in the saved search.
+        self._split_in_saved_search = split_config.get("saved_search", True)
+
+        # Fill out all the non-default values from the split configuration
+        # except for tstats_queries; these are handled separately later to merge
+        # with the filter configurations.
+        query_config.update(split_config["query_config"])
+        split_tstats_config = query_config.pop('tstats_queries')
+
+        # Ensure the split label is localised by deferring the invocation of
+        # get_text until here when the language is known,
+        query_config['split_label'] = split_config["split_label"]()
+
+        # The default value for the summary chart slit is the normal chart split
+        # unless is it explicity defined as being different.
+        if not query_config['summary_chart_split']:
+            query_config['summary_chart_split'] = query_config['chart_split']
+
+        # Set up the Splunk label for split group and sub-split
+        self.metadata.split_group = split_group
+        self.metadata.split_by = split_level
+
+        # The main split and therefore the x-axis may be date or time so this
+        # value may be overridden when the time processing is performed.
+        self.metadata.split_label = query_config['split_label']
+
+        return split_tstats_config, query_config
+
+    @staticmethod
+    def _http_filter_to_splunk(filter_item):
+        """Map HTTP Status filter syntax to Splunk Query syntax.
+        @param filter_item - single filter item as used in the JSON schema.
+        @return Part of a Splunk query."""
+        ## Map HTTP Status filter syntax to Splunk Query syntax.
+        # The key is the filter syntax used in JSON schema and the value is the
+        # part of a Splunk query used to filter the results.
+        # The noqa comments silence the pyflakes8 linter complaining about extra
+        # whitespace after the colons.
+        http_filter_to_splunk = {
+            JsonKeys.FILTER_BY_HTTP_SUCCESS: 'status_ok = "Success"',                        # noqa
+            JsonKeys.FILTER_BY_HTTP_FAILURE: 'status_ok = "Failure"',                        # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_INFORMATIONAL: 'status_type = "Informational 1xx"',  # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_SUCCESS:       'status_type = "Successful 2xx"',     # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_REDIRECTION:   'status_type = "Redirection 3xx"',    # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_CLIENT_ERROR:  'status_type = "Client Error 4xx"',   # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_SERVER_ERROR:  'status_type = "Server Error 5xx"'    # noqa
+        }
+        try:
+            return http_filter_to_splunk[filter_item]
+        except KeyError:
+            # If the filter isn't in the list it should be a digit e.g. 200 for
+            # a HTTP 200 status code.
+            status_code = str(filter_item)
+            assert status_code.isdigit(), "save us from potential splunk query injection"
+            return "sc_status = " + status_code
+
+    @staticmethod
+    def _cache_disposition_filter_to_splunk(filter_item):
+        """Map Cache Disposition filter syntax to Splunk Query syntax.
+        @param filter_item - single filter item as used in the JSON schema.
+        @return Part of a Splunk query."""
+        ## Map Cache Disposition filter syntax to Splunk Query syntax.
+        # The key is the filter syntax used in JSON schema and the value is the
+        # part of a Splunk query used to filter the results.
+        # The noqa comments silence the pyflakes8 linter complaining about extra
+        # whitespace after the colons.
+        cache_disposition_filter_to_splunk = {
+            JsonKeys.FILTER_BY_CACHE_DISPOSITION_HIT:  'cache_hit = 1',                                 # noqa
+            JsonKeys.FILTER_BY_CACHE_DISPOSITION_MISS: 'cache_hit = 0',                                 # noqa
+            JsonKeys.FILTER_BY_CACHE_MEM_HIT:             's_cachestatus = CACHE_MEM_HIT',              # noqa
+            JsonKeys.FILTER_BY_CACHE_HIT:                 's_cachestatus = CACHE_HIT',                  # noqa
+            JsonKeys.FILTER_BY_CACHE_VXICP_HIT:           's_cachestatus = VXICP_HIT',                  # noqa
+            JsonKeys.FILTER_BY_CACHE_REVALIDATED_MEM_HIT: 's_cachestatus = CACHE_REVALIDATED_MEM_HIT',  # noqa
+            JsonKeys.FILTER_BY_CACHE_REVALIDATED_HIT:     's_cachestatus = CACHE_REVALIDATED_HIT',      # noqa
+            JsonKeys.FILTER_BY_CACHE_MISS:                's_cachestatus = CACHE_MISS',                 # noqa
+            JsonKeys.FILTER_BY_CACHE_REVALIDATED_MISS:    's_cachestatus = CACHE_REVALIDATED_MISS',     # noqa
+            JsonKeys.FILTER_BY_CACHE_BACKGROUND_FILL:     's_cachestatus = CACHE_BACKGROUND_FILL',      # noqa
+            JsonKeys.FILTER_BY_CACHE_BAD_REQUEST:         's_cachestatus = BAD_REQUEST',                # noqa
+            JsonKeys.FILTER_BY_CACHE_SERV_FAIL:           's_cachestatus = SERV_FAIL',                  # noqa
+            JsonKeys.FILTER_BY_CACHE_UNKNOWN:             's_cachestatus = -'                           # noqa
+        }
+        try:
+            return cache_disposition_filter_to_splunk[filter_item]
+        except (TypeError, KeyError):
+            raise PropertyValueError([JsonKeys.FILTER_BY,
+                                      JsonKeys.FILTER_BY_CACHE_DISPOSITION,
+                                      filter_item],
+                                     gettext("An unknown sub-filter was given"))
+
+    @staticmethod
+    def _network_response_filter_to_splunk(filter_item):
+        """Map Network Response filter syntax to Splunk Query syntax.
+
+        @param filter_item - single filter item as used in the JSON schema.
+        @return Part of a Splunk query.
+
+        """
+        ## Map Cache Disposition filter syntax to Splunk Query syntax.
+        # The key is the filter syntax used in JSON schema and the value is the
+        # part of a Splunk query used to filter the results.
+        # The noqa comments silence the pyflakes8 linter complaining about extra
+        # whitespace after the colons.
+        network_response_filter_to_splunk = {
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_SUCCESS:  'status_ok = "Success"',           # noqa
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_FAILURE:  'status_ok = "Failure"',           # noqa
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_NON_HTTP: 'status_type = "Non-HTTP"',        # noqa
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_NETWORK_ERROR: 'status_type = "Network Error"',
+            JsonKeys.FILTER_BY_HTTP_ALL_INFORMATIONAL: 'status_type = "Informational 1xx"',  # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_SUCCESS:       'status_type = "Successful 2xx"',     # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_REDIRECTION:   'status_type = "Redirection 3xx"',    # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_CLIENT_ERROR:  'status_type = "Client Error 4xx"',   # noqa
+            JsonKeys.FILTER_BY_HTTP_ALL_SERVER_ERROR:  'status_type = "Server Error 5xx"'    # noqa
+        }
+        try:
+            return network_response_filter_to_splunk[filter_item]
+        except (TypeError, KeyError):
+            raise PropertyValueError(
+                [JsonKeys.FILTER_BY, JsonKeys.FILTER_BY_NETWORK_RESPONSE,
+                 filter_item],
+                gettext("An unknown sub-filter was given"))
+
+    @staticmethod
+    def _remove_zone(tstats_queries, sourcetype, zone):
+        """Safely remove a zone from the zones set by the metric.
+
+        A tier filter should only be applied to a metric that supports the
+        appropriate zones in the source types. However, this method catches the
+        errors and prints a warning rather than causing a server error to be
+        returned.
+
+        @param tstats_queries - list of query configurations which will be
+                                modified to set the zone filter.
+        @param sourcetype - the source type from which to remove the zone.
+        @param zone - the zone to remove.
+        """
+        zone_removed = False
+        for query in tstats_queries:
+            if query['mi_sourcetype'] != sourcetype:
+                continue
+            zone_list = [z for z in query['mi_zones'] if z != zone]
+            zone_removed = zone_removed or zone_list != query['mi_zones']
+            query['mi_zones'] = tuple(zone_list)
+
+        if not zone_removed:
+            logger.warning("Attempted to filter by zone not present in metric."
+                           " '%s': '%s'" % (sourcetype, zone))
+
+    @staticmethod
+    def _cdn_tier_filter_to_splunk(filter_items, tstats_queries):
+        """Map CDN Tier filter syntax to Splunk Query syntax.
+        The CDN Tier filter is a special case filter as it modifies the CDN Zone
+        (which is already implicitly filtered) and can cause an entire source
+        type to be omitted from the query.
+
+        @note This should not be called if the filter is empty.
+
+        @param filter_items - list of all filter items for the CDN Tier filter.
+        @param tstats_queries - list of tstats query configurations to filter.
+        @return remaining tstats query configurations after filtering
+        """
+        # If the delivery tier is not in the filter list then remove the zone
+        # from the cdn_del_access source type.
+        if JsonKeys.FILTER_BY_CDN_TIER_DELIVERY not in filter_items:
+            ReportJobCollection._remove_zone(
+                tstats_queries, 'cdn_del_access', 'external')
+
+        # If the intermediate tier is not in the filter list then remove the
+        # zone from the cdn_del_acquisition source type.
+        if JsonKeys.FILTER_BY_CDN_TIER_INTERMEDIATE not in filter_items:
+            ReportJobCollection._remove_zone(
+                tstats_queries, 'cdn_del_acquisition', 'cdn')
+
+        # If the acquiry tier is not in the filter list then remove these zones
+        # from the cdn_del_acquisition source type.
+        if JsonKeys.FILTER_BY_CDN_TIER_ACQUIRY not in filter_items:
+            for zone in ('cdn-origin', 'external'):
+                ReportJobCollection._remove_zone(
+                    tstats_queries, 'cdn_del_acquisition', zone)
+
+        # Eliminate queries with empty zones; this also removes the
+        # list of tstats_queries from the query parts dictionary for separate
+        # processing.
+        return [q for q in tstats_queries if q['mi_zones']]
+
+    @staticmethod
+    def _remove_network_response_class(tstats_queries, query_class):
+        """Remove a network response class from tstats queries set by the filter.
+
+        @param tstats_queries - list of query configurations which will be
+                                modified remove the network response class.
+        @param query_type - the query class to remove.
+        """
+        for query in tstats_queries:
+            query['network_response_classes'] = [
+                qclass for qclass in query['network_response_classes']
+                if qclass != query_class]
+
+    @staticmethod
+    def _optimise_network_response_queries(filter_items, tstats_queries):
+        """Remove queries that the network response filters made ineffectual.
+
+        Any tstats query that only covers events that have been filtered out
+        can be removed to avoid running too many queries.
+
+        @note This should not be called if the filter is empty.
+
+        @param filter_items - list of all filter items for the network response
+                              filter.
+        @param tstats_queries - list of tstats query configurations to filter.
+        @return remaining tstats query configurations after filtering
+
+        """
+        non_http_filters = set([
+            # Non-HTTP only shows up when filtering on success on Non-HTTP
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_NON_HTTP,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_SUCCESS,
+        ])
+        if not non_http_filters.intersection(filter_items):
+            ReportJobCollection._remove_network_response_class(
+                tstats_queries, 'non_http')
+
+        http_filters = set([
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_HTTP_INFORMATIONAL,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_HTTP_SUCCESS,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_HTTP_REDIRECTION,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_HTTP_CLIENT_ERROR,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_HTTP_SERVER_ERROR,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_FAILURE,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_SUCCESS,
+        ])
+        if not http_filters.intersection(filter_items):
+            ReportJobCollection._remove_network_response_class(
+                tstats_queries, 'http')
+
+        network_error_filters = set([
+            # events with an s_flags field should be included when these
+            # filters are active
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_NETWORK_ERROR,
+            JsonKeys.FILTER_BY_NETWORK_RESPONSE_FAILURE,
+        ])
+        if not network_error_filters.intersection(filter_items):
+            ReportJobCollection._remove_network_response_class(
+                tstats_queries, 'network_error')
+
+        # only queries that have remaining response classes are to be used
+        return [q for q in tstats_queries if q['network_response_classes']]
+
+    def _generate_filter(self, parameters, query_config):
+        """Generate the filter (if any) to be applied to the report.
+
+        Empty filters have a meaning, i.e. don't filter on this. so the
+        following means apply @c myFilter:
+
+        @code
+        "myFilter": []
+        @endcode
+
+        Even if the filter specifed is not part of available filters for this
+        report an error should not be returned. The filter is a valid part of
+        the schema and since this client has not requested a filter to be
+        applied the report can be completed exactly as requested. However, as
+        soon as the filter has some contents an error should be returned as the
+        report cannot be completed as requested, e.g.
+
+        @code
+        "myFilter": ["some", "stuff"]
+        @endcode
+
+        @note The returned @c filter_splits value will be combined with the
+              metric and optional split in
+              @ref ReportJobCollection._combine_split_filter_parameters.
+
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @param query_config - dictionary containing the current query parts
+                              which may be modified when generating filters.
+
+        @return A three value tuple, with:
+                - a list of tstats configurations for all filter splits, to
+                  be combined with the metric and split configurations.
+                - a sequence of optimisation callbacks; these will be called
+                  after combining tstats queries, so the filter can remove
+                  parts that are not needed when filtering.
+                - A dict containing a @c filter key, whose value is part of the
+                  splunk query and a @c summary_filter key, whose value is the
+                  summary index query.
+        """
+        filter_parts = {
+            'filter': '',
+            'summary_filter': '',
+        }
+
+        # Get the available filters for this reporting pack
+        pack_filters = self.reporting_pack[JsonKeys.FILTER_BY]
+
+        # Remove addressable types from the filter as they are handled via links
+        # and not in this method.
+        available_filters = {}
+        for filter_group, filter_values in pack_filters.iteritems():
+            # An empty filter
+            if filter_values != {}:
+                available_filters[filter_group] = filter_values
+
+        # Get the filter value from the parameters or the default valid for the
+        # report if not defined.
+        filters = self._get_param_value(parameters, JsonKeys.FILTER_BY)
+
+        # If an empty filter has been applied or all the provided filters are
+        # empty lists then disable filtering
+        if not filters or not any(filters.values()):
+            return (), (), filter_parts
+
+        # Save filter used in Splunk job metadata
+        self.metadata.filter_by = filters
+
+        filter_splits, where_clauses, optimisations = [], [], []
+        for filter_group in filters:
+            # Only process non-empty filters
+            if not filters[filter_group]:
+                continue
+
+            # Check the filter is available
+            if filter_group not in available_filters:
+                raise UnrecognisedProperty(
+                    [JsonKeys.FILTER_BY],
+                    gettext(u"The filter must be one of '{filters}'.").format(
+                        filters="', '".join(sorted(available_filters))))
+            # Check the values of the filter are supported by the reporting pack
+            not_allowed = set(map(str, filters[filter_group])) - set(
+                map(str, get_subfilters(available_filters[filter_group])))
+            if not_allowed:
+                raise PropertyValueError(
+                    [JsonKeys.FILTER_BY, filter_group],
+                    gettext(u"The filter values not allowed '{values}'.").format(
+                        values="', '".join(sorted(not_allowed))))
+
+            if filter_group == JsonKeys.FILTER_BY_HTTP_STATUS:
+                filter_splits.append(
+                    SPLIT_CONFIGURATION[JsonKeys.SPLIT_BY_HTTP_STATUS_CODE_CLASS]['query_config'])
+                where_clauses.append([self._http_filter_to_splunk(i)
+                                      for i in filters[filter_group]])
+
+            elif filter_group == JsonKeys.FILTER_BY_CACHE_DISPOSITION:
+                filter_splits.append(
+                    SPLIT_CONFIGURATION[JsonKeys.SPLIT_BY_CACHE_STATUS_HIT]['query_config'])
+                where_clauses.append(
+                    [self._cache_disposition_filter_to_splunk(i)
+                     for i in filters[filter_group]])
+
+            elif filter_group == JsonKeys.FILTER_BY_CDN_TIER:
+                # This filter can be implemented wholly as an optimisation,
+                # removing tstats queries per tier not filtered on.
+                optimisations.append(partial(
+                    self._cdn_tier_filter_to_splunk, filters[filter_group]))
+
+            elif filter_group == JsonKeys.FILTER_BY_NETWORK_RESPONSE:
+                filter_splits.append(
+                    SPLIT_CONFIGURATION[JsonKeys.SPLIT_BY_NETWORK_RESPONSE_CODE_CLASS]['query_config'])
+                where_clauses.append(
+                    [self._network_response_filter_to_splunk(i)
+                     for i in filters[filter_group]])
+
+                optimisations.append(partial(
+                    self._optimise_network_response_queries,
+                    filters[filter_group]))
+
+            else:
+                raise PropertyValueError([JsonKeys.FILTER_BY, filter_group],
+                                         gettext("An unknown filter was given"))
+
+        where_clause = " ".join(["(%s) " % " OR ".join(c)
+                                 for c in where_clauses])
+
+        # Not all filters require a specific filter they may modify the query
+        # in other ways.
+        if where_clause:
+            filter_parts['filter'] = '| search %s' % where_clause
+            filter_parts['summary_filter'] = ' %s' % where_clause
+
+        return filter_splits, optimisations, filter_parts
+
+    @staticmethod
+    def _join_customer_ids(org_ids, org_field):
+        """Create a Splunk clause used for restricting results to the given organization ids.
+        @param org_ids - list of organization ids.
+        @param org_field - name of the field holding the organization id.
+        @return A string that can be used in Splunk to restrict results to the given organization ids.
+        """
+        # NOTE: Make sure all ids we insert are ints - no injection attack
+        # possible.
+        where_clause = " OR ".join(
+            org_field + "=" + str(int(id)) for id in org_ids)
+        where_clause = "(" + where_clause + ")"
+        return where_clause
+
+    def _build_customer_restriction(self, parameters):
+        """Give the user's customer restriction in query format.
+
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @return A dict containing a 'customer_restriction' key, whose value is
+        the raw splunk query part to select appropriate customer ids and a similar
+        'summary_customer_restriction' key, whose value is the raw splunk query to
+        select the appropriate customer ids used in the summary index.
+        @throws HTTPException - HTTP 401 if this user has no roles that provide
+        access to Service Customers.
+        """
+        db = self.get_cdn_db()
+        try:
+            org_ids = db.get_orgs_with_sites()
+        except cdndb.AuthorizationError as err:
+            logger.info("Unauthorized for get_orgs_with_sites: %s", err)
+            flask.abort(401)
+
+        # The list of Customer IDs that we will search within is the
+        # intersection of those that we are allowed to see and the organizations
+        # requested in the parameters.
+        filtered_org_ids = self._parse_organization_parameters(parameters)
+        if filtered_org_ids:
+            logger.debug("Filter by these organizations: %s", filtered_org_ids)
+            org_ids = filtered_org_ids.intersection(org_ids)
+
+        if org_ids:
+            where_clause = self._join_customer_ids(org_ids, "host")
+            summary_where_clause = self._join_customer_ids(org_ids, "orig_host")
+        else:
+            # Still issue the query, but with a customer id restriction that
+            # includes no customer data at all. We can't say you are not
+            # authorized, because you might be. E.g. a user with a role on a
+            # Content Provider that has no Services would have an empty ids
+            # list. We can't have an empty 'where clause' because that would
+            # apply *no restriction* and the results would include all data!
+
+            # NOTE: Hardcoded string - no injection attack possible
+            where_clause = 'host="impossible"'
+            summary_where_clause = 'orig_host="impossible"'
+
+        return {
+            'customer_restriction': where_clause,
+            'summary_customer_restriction': summary_where_clause,
+        }
+
+    def _parse_organization_parameters(self, parameters):
+        """Process user's requested organization filter into a set of IDs.
+        The links have already been validated (by @ref unapiflaskapp.link_validator) and
+        so will only contain links of the correct type and to the correct
+        resources.
+
+        Also populates the @c org_filter_by and @c org_filter_by_owns attributes
+        of the self.metadata which is sent to splunk so we can read it back
+        afterwards.
+
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+        @return A set of organization IDs that actually will have data to be
+        filtered on - for direct use in the splunk query "where clause".
+        """
+
+        def get_org_ids_by_rel(links, rel):
+            """A generator - yield the resource ID of all organizations
+            with the given rel (if any) in the given links.
+            """
+            org_links = self.links_for_rel(rel, links)
+            for org_link in org_links:
+                try:
+                    org_id = org_link[JsonKeys.LINK_RESOURCE_ID]["org_id"]
+                except KeyError:
+                    logger.error("Link does not contain an organization id, %s", org_link)
+                else:
+                    yield org_id
+
+        # If present get the links from the message body
+        links = parameters.get(JsonKeys.LINKS, {})
+
+        # Get all orgs given directly by filter-by or filter-by-owns relation.
+        # Note how we make sets to remove duplicates
+        org_ids = set(get_org_ids_by_rel(links, LinkRel.FILTER_BY))
+        org_owns_ids = set(get_org_ids_by_rel(links, LinkRel.FILTER_BY_OWNS))
+
+        # Sort the ids before storing in the metadata, so they come back in a
+        # canonical form suitable for using in the ReportJobItem.
+        self.metadata.org_filter_by = sorted(org_ids)
+        self.metadata.org_filter_by_owns = sorted(org_owns_ids)
+
+        # Splunk query can use the filter-by orgs directly.
+        result_ids = set(org_ids)
+
+        # Get all the descendant orgs of any orgs given by filter-by-owns
+        # relation. These are the ones we actually return for the splunk query
+        # so add to result_ids.
+        db = self.get_cdn_db()
+        for org_owner_id in org_owns_ids:
+            descendant_ids = db.get_descendant_orgs_with_sites(org_owner_id)
+            result_ids.update(descendant_ids)
+
+        return result_ids
+
+    def _add_time_range_warning(self, index_resolution, earliest_time):
+        """Generate an appropriate warning when the time range is shortened,
+        @param index_resolution - the index resolution (low, medium or high)
+        @param earliest_time - the earliest time available in the index.
+        """
+        # Determine the reason the time range has been shortened to give the
+        # user the best feedback possible.
+        if index_resolution == LOW_RESOLUTION:
+            if self._peak_query:
+                reason = gettext("metric")
+            else:
+                # This shouldn't normally be used. The time range should only be
+                # shortened due to the metric and/or the time resolution.
+                reason = gettext("report")
+        else:
+            if self._peak_query:
+                reason = gettext("metric and time resolution")
+            else:
+                reason = gettext("time resolution")
+
+        # Create a localised date and time string
+        from_date = format_datetime(earliest_time, "short")
+
+        # Prepare the localised warning message
+        warning = gettext(
+            "Your requested time range has been shortened because the selected "
+            "%(reason)s is only available from %(from_date)s.",
+            reason=reason, from_date=from_date)
+        # Append to the list stored in the job metadata, include the warning
+        # text and the request ID in which the warning was generated.
+        self.metadata.warnings.append((warning, flask.g.request_id))
+
+    def _parse_time_parameters(self, parameters):
+        """Process user's requested time parameters into query format.
+
+        This generates the start and end times that will be used in the queries
+        for the main index, saved search and summary index. This method takes
+        into account the time resolution selected and whether or not a peak
+        query will be used to use the most performant query possible. For
+        performance reasons the following is the order of preference when
+        querying the indexes:
+        -# Summary Index
+        -# Saved Search
+        -# Main Index
+
+        @par Main Index
+        This index contains all the events so has an effective sub-second
+        resolution although 1 minute is smallest resolution we support. This is
+        available as soon as the log files have been ingested and the data is
+        kept for as many days as the storage limits allow.
+        The Main Index is used for time resolutions higher than an hour and peak
+        rate metrics queries. This index is also used when the hourly or daily
+        summary is not available for the time range selected, which may be
+        because the time range is too recent (and they haven't been generated
+        yet) or the retention time of the hourly saved search data has expired.
+
+        @par Saved Search
+        This has an hourly resolution but is not available for 2 hours, the data
+        is available for the last 7 days.
+        The Saved Search is used for summing metric queries for time resolutions
+        of an hour over the past 7 days. It will also be used for lower time
+        resolutions (e.g. 1 day) where the Summary Index hasn't been generated
+        yet. The saved search does not include data for all metrics.
+
+        @par Summary Index
+        This has a daily resolution but is not available for 3 days, the index
+        is retained indefinitely.
+        The Summary Index is used (when available) for summing metric queries
+        for time resolutions of 1 day or lower.
+
+        <HR>
+        @par Peak Rate Metrics or High Time Resolutions
+        For Peak Throughput and Peak Request Rate Metric and/or Time Resolutions
+        in minutes only the Main Index can be used.
+        @verbatim
+         N/A |                         Main Index                         |
+        _____|____________________________________________________________|
+           -??d                                                          Now
+        @endverbatim
+
+        @par Summing Metrics and Medium Time Resolutions
+        For Bytes Delivered or Request Count Metrics with a Time Resolution of
+        1 hour both the Main Index and the Saved Search can be used. The Main
+        Index may be queried twice as the saved search is not retained for as
+        long as the Main Index.
+        @verbatim
+         N/A |     Main Index        |     Saved Search     | Main Index |
+        _____|_______________________|______________________|____________|
+           -??d                    -7d                     -2h          Now
+        @endverbatim
+
+        @par Summing Metrics and Low Time Resolutions
+        For Bytes Delivered or Request Count Metrics with a Time Resolution of
+        1 day or lower, the Main Index, the Saved Search and the Summary Index
+        can be used.
+        @verbatim
+                    Summary Index             |Saved Search | Main Index |
+        ______________________________________|_____________|____________|
+        <-Indefinite                         -3d           -2h          Now
+        @endverbatim
+
+        <HR>
+        @note For Splunk (and therefore also the UNAPI) start times are
+              inclusive and End times are exclusive.
+
+        @param parameters - dictionary containing the input parameters parsed
+                            from the JSON in the POST request body.
+
+        @throws PropertyValueError - @parblock if parameters are invalid e.g.
+                - the start time is after or the same as the end time
+                - the start time is in the future
+                - @c now is given as a start time
+                 @endparblock
+
+        @return A dict containing time keys suitable for insertion into the
+                Splunk query string.
+        """
+        # Get start time parameter, use the default if not provided
+        given_start_time = self._get_param_value(parameters, JsonKeys.START_TIME)
+        try:
+            start_time = get_absolute_time(given_start_time, self._now)
+        except ValueError:
+            raise PropertyValueError([JsonKeys.START_TIME], gettext("Invalid time is given"))
+
+        # Get end time parameter, use the default if not provided
+        given_end_time = self._get_param_value(parameters, JsonKeys.END_TIME)
+        try:
+            end_time = get_absolute_time(given_end_time, self._now)
+        except ValueError:
+            raise PropertyValueError([JsonKeys.END_TIME], gettext("Invalid time is given"))
+
+        # Validate the times
+        if given_start_time == 'now':
+            raise PropertyValueError([JsonKeys.START_TIME], gettext("The start time cannot be now"))
+        if start_time > end_time:
+            raise PropertyValueError([JsonKeys.START_TIME], gettext("The start time is later than the end time"))
+        if start_time > self._now:
+            raise PropertyValueError([JsonKeys.START_TIME], gettext("The start time is in the future"))
+        if start_time == end_time:
+            raise PropertyValueError([JsonKeys.START_TIME], gettext("The start time is the same as the end time"))
+
+        # Get time resolution parameter, use the default if not provided
+        given_time_resolution = self._get_param_value(parameters, JsonKeys.TIME_RESOLUTION)
+        try:
+            time_res_details = TIME_RESOLUTION_LOOKUP[given_time_resolution]
+        except KeyError:
+            raise PropertyValueError([JsonKeys.TIME_RESOLUTION], gettext("This time resolution is not supported"))
+
+        # Record whether or not there is a time split
+        self._time_split = given_time_resolution != JsonKeys.TIME_RESOLUTION_NONE
+
+        # Based on the time resolution requested set the Splunk compatible time
+        # resolution and the split label (which may be none if a time resolution
+        # of None was requested).
+        split_label = time_res_details[JsonKeys.SPLIT_LABEL]
+        index_resolution = time_res_details[INDEX_RESOLUTION]
+        time_dict = {
+            'time_resolution': time_res_details[JsonKeys.TIME_RESOLUTION],
+            'tstat_time_resolution': time_res_details[TSTAT_TIME_RESOLUTION],
+            'time_label': split_label,
+            'time_format': ISO_8601_DATE_FORMAT,
+        }
+
+        ## Use the main index at the start of the query
+        self._use_main_index = False
+        ## Use the saved search in the query
+        self._use_saved_search = False
+        ## Use the main index 2 times in the query
+        self._use_main_index_twice = False
+        ## Use the summary index in the query
+        self._use_summary_index = False
+
+        # If we have a peak query or a high/medium time resolution then we can
+        # only use the main index and maybe the saved search. Some metrics are
+        # explicitly excluded from the summary index, regardless of the time
+        # resolution picked.
+        if (index_resolution != LOW_RESOLUTION or self._peak_query or
+                not self._metric_in_summary_index):
+            # Retrieve the absolute time for when there is data in the main index
+            earliest_time = IndexRetention().mainIndexAbsolute()
+
+            # If the metadata is not availble for the main index then log an
+            # error and continue without restricting the time range.
+            if earliest_time is None:
+                logger.error("Unable to determine Main Index rentention, continuing without restricting start time.")
+            # If the start time is before the earliest time that can be
+            # supported reset the start time to the earliest possible
+            elif earliest_time > start_time:
+                # Add a warning to the job to inform the user that the time
+                # range has been shortened
+                self._add_time_range_warning(index_resolution, earliest_time)
+                start_time = earliest_time
+
+            # Validate that there is still some index to search, generate a
+            # warning if there is not so it can be seen by the client.
+            if start_time >= end_time:
+                # If a metric has been selected that requires a high resolution
+                # index then none of the time resolutions will be available so
+                # give this warning precedence.
+                if self._peak_query or not self._metric_in_summary_index:
+                    raise PropertyValueError(
+                        [JsonKeys.METRIC],
+                        gettext("This metric is not available for this time range"))
+                else:
+                    raise PropertyValueError(
+                        [JsonKeys.TIME_RESOLUTION],
+                        gettext("This time resolution is not available for this time range"))
+
+            # If we can only use the main index
+            if (index_resolution == HIGH_RESOLUTION or self._peak_query or
+                    not self._metric_in_summary_index):
+                # Setup main index start and end time after adjustment
+                main_start_time = start_time
+                main_end_time = end_time
+                self._use_main_index = True
+            # If we can use the main index and saved search
+            else:
+                ss_begin = calculate_relative_time_from_now(SAVED_SEARCH_BEGIN, self._now)
+                ss_finish = calculate_relative_time_from_now(SAVED_SEARCH_FINISH, self._now)
+
+                # If the query end time is before the saved search begin time
+                # then we only have to use the main index once.
+                if end_time <= ss_begin:
+                    main_start_time = start_time
+                    main_end_time = end_time
+                    self._use_main_index = True
+                # If the query end time is before the saved search finish time
+                # then we should use the saved search.
+                elif end_time <= ss_finish:
+                    self._use_saved_search = True
+                    saved_search_end_time = end_time
+                    # If the query start time is before the saved search begin
+                    # time then we have to use the main index as well.
+                    if start_time < ss_begin:
+                        main_start_time = start_time
+                        main_end_time = ss_begin
+                        saved_search_start_time = ss_begin
+                        self._use_main_index = True
+                    # Otherwise we are searching entirely in the saved search
+                    else:
+                        saved_search_start_time = start_time
+                        self._use_main_index = False
+                # If the query end time is after the saved search finish time
+                # then we have to use the main index.
+                else:
+                    self._use_main_index = True
+                    main_end_time = end_time
+                    # If the query start time is before the saved search begin
+                    # time then we have to use the main index twice with the
+                    # saved search in the middle to increase performance.
+                    if start_time < ss_begin:
+                        main_start_time2 = start_time
+                        main_end_time2 = ss_begin
+                        saved_search_start_time = ss_begin
+                        saved_search_end_time = ss_finish
+                        main_start_time = ss_finish
+                        self._use_saved_search = True
+                        self._use_main_index_twice = True
+                    # If the query start time is before the saved search end
+                    # time then we use the main index and the saved search.
+                    elif start_time < ss_finish:
+                        saved_search_start_time = start_time
+                        saved_search_end_time = ss_finish
+                        main_start_time = ss_finish
+                        self._use_saved_search = True
+                    # If the query start time is after the saved search finish
+                    # time then we only have to use the main index.
+                    else:
+                        main_start_time = start_time
+                        self._use_saved_search = False
+
+            # Exclude the summary index from Splunk query
+            self._use_summary_index = False
+
+        # If we have a low time resolution we can use the main index, saved
+        # search and summary index.
+        else:
+            si_finish = calculate_relative_time_from_now(SUMMARY_INDEX_FINISH, self._now)
+            ss_finish = calculate_relative_time_from_now(SAVED_SEARCH_FINISH, self._now)
+
+            # If the query end time is before the summary index finishes then
+            # only the summary index is needed.
+            if end_time < si_finish:
+                summary_start_time = start_time
+                summary_end_time = end_time
+                self._use_summary_index = True
+                self._use_saved_search = False
+                self._use_main_index = False
+            # If the end time is after the summary index finishes but before
+            # the saved search finishes then we need to use the saved search.
+            elif end_time < ss_finish:
+                # If the start time is before the summary index finishes and the
+                # end time is after so use both the summary index and the saved
+                # search.
+                if start_time < si_finish:
+                    summary_start_time = start_time
+                    summary_end_time = si_finish
+                    saved_search_start_time = si_finish
+                    saved_search_end_time = end_time
+                    self._use_summary_index = True
+                    self._use_saved_search = True
+                    self._use_main_index = False
+                # If the query start time is after the summary index finishes
+                # then we disable the use of the summary index and just used the
+                # saved search.
+                else:
+                    saved_search_start_time = start_time
+                    saved_search_end_time = end_time
+                    self._use_summary_index = False
+                    self._use_saved_search = True
+                    self._use_main_index = False
+            # If the end time is after the saved search finishes then we need to
+            # use the main index.
+            else:
+                # If the start time is before the summary index finishes we
+                # should use all the indexes.
+                if start_time < si_finish:
+                    summary_start_time = start_time
+                    summary_end_time = si_finish
+                    saved_search_start_time = si_finish
+                    saved_search_end_time = ss_finish
+                    main_start_time = ss_finish
+                    main_end_time = end_time
+                    self._use_summary_index = True
+                    self._use_saved_search = True
+                    self._use_main_index = True
+                # If the query start time is after the summary index finishes
+                # but before the saved search finishes then we only use the
+                # saved search and main index.
+                elif start_time < ss_finish:
+                    saved_search_start_time = start_time
+                    saved_search_end_time = ss_finish
+                    main_start_time = ss_finish
+                    main_end_time = end_time
+                    # Exclude the summary index from Splunk query
+                    self._use_summary_index = False
+                    self._use_saved_search = True
+                    self._use_main_index = True
+                # If the query start time is after the saved search finishes
+                # then we just use the main index.
+                else:
+                    main_start_time = start_time
+                    main_end_time = end_time
+                    # Exclude the summary index from Splunk query
+                    self._use_summary_index = False
+                    self._use_saved_search = False
+                    self._use_main_index = True
+
+        # Add main index times if being used
+        if self._use_main_index:
+            # Format the index start and end times as Splunk date format
+            time_dict.update({
+                'main_start_time': datetime.strftime(main_start_time, SPLUNK_DATE_FORMAT),
+                'main_end_time': datetime.strftime(main_end_time, SPLUNK_DATE_FORMAT)
+            })
+
+        # Add main index times again if being used twice in the query
+        if self._use_main_index_twice:
+            # Format the index start and end times as Splunk date format
+            time_dict.update({
+                'main_start_time2': datetime.strftime(main_start_time2, SPLUNK_DATE_FORMAT),
+                'main_end_time2': datetime.strftime(main_end_time2, SPLUNK_DATE_FORMAT)
+            })
+
+        # Add saved search times if being used
+        if self._use_saved_search:
+            # If the data for the metric and the split is in the saved search
+            # then check that the saved search artifacts are ready, otherwise
+            # run the report as if they are not.
+            if self._metric_in_saved_search and self._split_in_saved_search:
+                saved_search_ready = saved_search_available()
+            else:
+                saved_search_ready = False
+
+            if saved_search_ready:
+                # Format the index start and end times as epoch times as the saved
+                # search query can't used earliest and latest and we need to query the
+                # _time field.
+                time_dict.update({
+                    'saved_search_start_time': timegm(saved_search_start_time.timetuple()),
+                    'saved_search_end_time': timegm(saved_search_end_time.timetuple())
+                })
+            else:
+                # Do not use the saved search anymore
+                self._use_saved_search = False
+
+                # If the main index was used twice with the saved search
+                # sandwiched in-between, we can extend the start time of the
+                # first main index query to the start time used for the second
+                # main index query.
+                if self._use_main_index_twice:
+                    # Do not use main index part deux
+                    self._use_main_index_twice = False
+                    del time_dict['main_start_time2']
+                    del time_dict['main_end_time2']
+                    time_dict.update({
+                        'main_start_time': datetime.strftime(main_start_time2, SPLUNK_DATE_FORMAT),
+                    })
+                # If the main index has been used once it can either be before
+                # or after the saved search so adjust the times accordingly.
+                elif self._use_main_index:
+                    # If the main index is before the saved search then extend
+                    # the end time of the main index.
+                    if main_start_time < saved_search_start_time:
+                        time_dict.update({
+                            'main_end_time': datetime.strftime(saved_search_end_time, SPLUNK_DATE_FORMAT),
+                        })
+                    else:
+                        # Otherwise the main index is after the saved search
+                        # then extend the start time of the main index.
+                        time_dict.update({
+                            'main_start_time': datetime.strftime(saved_search_start_time, SPLUNK_DATE_FORMAT),
+                        })
+                # If the main index was was not used then the main start time
+                # has to be the saved search start time and the main end time
+                # has to be the saved search end time
+                else:
+                    self._use_main_index = True
+                    time_dict.update({
+                        'main_start_time': datetime.strftime(saved_search_start_time, SPLUNK_DATE_FORMAT),
+                        'main_end_time': datetime.strftime(saved_search_end_time, SPLUNK_DATE_FORMAT)
+                    })
+
+        # Add summary index times if being used
+        if self._use_summary_index:
+            # Format the index start and end times as Splunk date format
+            time_dict.update({
+                'summary_start_time': datetime.strftime(summary_start_time, SPLUNK_DATE_FORMAT),
+                'summary_end_time': datetime.strftime(summary_end_time, SPLUNK_DATE_FORMAT)
+            })
+
+        # Calculate where our start time should snap to
+        snap_to_start_time = calculate_relative_time_from_now(time_res_details[SNAP_TO], start_time)
+        time_dict[SNAP_TO] = datetime.strftime(snap_to_start_time, ISO_8601_DATE_FORMAT)
+
+        # The timechart should start at the snap to time and end at the report
+        # end time.
+        time_dict.update({
+            'chart_start_time': datetime.strftime(snap_to_start_time, SPLUNK_DATE_FORMAT),
+            'chart_end_time': datetime.strftime(end_time, SPLUNK_DATE_FORMAT)
+        })
+
+        # Add time parameters used in this report to the Splunk job metadata
+        self.metadata.time_resolution = given_time_resolution
+        self.metadata.start_time = given_start_time
+        self.metadata.end_time = given_end_time
+        # Record the time at which the report will start and end (this may have
+        # been adjusted because of the time resolution).
+        self.metadata.report_start_time = datetime.strftime(start_time, ISO_8601_DATE_FORMAT)
+        self.metadata.report_end_time = datetime.strftime(end_time, ISO_8601_DATE_FORMAT)
+        # Save chart x-axis label, this may be time or date but if no time
+        # resolution has been selected then use the text for the requested
+        # split.
+        if split_label:
+            self.metadata.split_label = gettext(split_label)
+
+        return time_dict
+
+    def post(self, request_body):
+        """Process the request to run the report.
+        @param request_body - dictionary containing the entire POST request
+        body, as already parsed from the JSON.
+        @return On success an instance of @ref report_job_item.ReportJobItem to
+                render the response.
+        @throws ApiBadRequest subclass if parameters are invalid.
+        @throws HTTPException - HTTP 401 if report cannot be run by current user
+        (e.g. because this user has no roles that provide access to Service
+        Customers)
+        """
+        logger.debug("Handling POST to ReportJobCollection: %r", request_body)
+
+        ## The current time, retrieved once to ensure consistency.
+        # @note Setting this outside the time handling methods allows the value
+        #       to be controlled during unit testing as this isn't possible via
+        #       normal mocking methods.
+        self._now = datetime.now()
+
+        search_query, query_config = self._build_search_query(request_body)
+
+        # Get report name for inclusion in the search metadata
+        report_name = self.report_definition[JsonKeys.TITLE]()
+
+        # Store the Report ID used to initiate the report job so that the job
+        # only turns up in one report job collection and the owns link of the
+        # job can be rendered.
+        self.metadata.report_id = self.path_id
+
+        # Add a custom (localised) title for the job which can be used as a
+        # report job item title. It can then be used as a title to the chart
+        # in Console or other client.
+        self.metadata.title = gettext("Results for the %(report_name)s report",
+                                      report_name=report_name)
+        # Add the requesting user's ID, so we can confirm identity
+        # when reading the Splunk job back later in a subsequent request.
+        self.metadata.user_id = flask.g.auth_user
+
+        # Get the start time snapped to the resolution which has to be given as a
+        # parameter to the Splunk job call.
+        # For example if we are running a report using the week resolution then
+        # snap_to_start_time will be set to the closest Monday before the start time.
+        # This ensures that the data is correctly split up in weeks.
+        # Using this start date also ensures that periods with no data are shown in the graphs.
+        snap_to_start_time = query_config[SNAP_TO]
+
+        # Run the search and get back a Splunk job instance
+        logger.debug("Creating splunk job for query [%s] with metadata %s",
+                     search_query, self.metadata)
+
+        with SplunkService() as service:
+            # Note we do not use "latest_time" as this breaks the "loadjob"
+            # command for most time ranges.
+            splunk_job = service.jobs.create(search_query,
+                                             earliest_time=snap_to_start_time,
+                                             exec_mode="normal",
+                                             preview=True,
+                                             **self.metadata.metadata_attributes)
+            logger.debug("Splunk job created: %r", splunk_job.name)
+
+            # Don't wait for the job to be ready, it just makes the UNAPI seem
+            # sluggish. The Splunk SDK will return "not ready" when the dispatch
+            # state is "QUEUED" or "PARSING", this is handled by the job item.
+
+        # Create a report job item and then provide it with the Splunk job
+        # instance and job metadata to avoid an extra round trip to Splunk.
+        return report_job_item.ReportJobItem(owner_instance=self,
+                                             data=(splunk_job, self.metadata))

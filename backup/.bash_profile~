@@ -1,0 +1,25 @@
+export P4CLIENT=$(whoami)
+export WORKON_HOME=$HOME/.virtualenvs
+export PROJECT_HOME=$HOME/Users/ajeffries
+source /usr/local/bin/virtualenvwrapper.sh
+
+export NVM_DIR="/Users/ajeffries/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm
+export GREP_OPTIONS='--color=always'
+alias blade="ssh bladefvx-ajeffreys.eng.velocix.com"
+alias utility0="ssh root@us0.zzz157s1.cdn"
+alias utility1="ssh root@us1.zzz157s1.cdn"
+alias testhost="ssh root@th1.zzz157d1.cdn"
+alias monitoring="ssh root@mn1.zzz157s1.cdn"
+alias publishing="ssh root@pb1.zzz157s1.cdn"
+alias rotor="ssh root@dq1.zzz157s1.cdn"
+alias storage="ssh root@cs1.zzz157s1.cdn"
+alias delivery1="ssh root@cp1.zzz157d1.cdn"
+alias delivery2="ssh root@cp2.zzz157d1.cdn"
+alias billing="ssh root@bs1.zzz157s1.cdn"
+alias cachecontroller="ssh root@cc1.zzz157s1.cdn"
+alias database="ssh root@db1.zzz157s1.cdn"
+
+set -o vi
+
+PATH=$PATH:~/bin/

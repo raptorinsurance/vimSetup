@@ -1,0 +1,360 @@
+"""@package unapireporting.reports.metrics
+The configuration and relevant code for metrics in reports."""
+
+# 3rd party
+from flaskext.babel import gettext
+
+# UNAPI
+from unapicommon.definitions import JsonKeys
+
+## This table defines the dynamic aspects of the query which vary by the metric
+# - metric_label - localised the name of the metric used to label the axis, also
+#                  used in the query as column name.
+# - peak_query - defines whether or not this is a peak or percentile query. This
+#                changes the templates used to generate the Splunk query. This
+#                also means that the time parsing will only use the main index.
+#                Default: False
+# - saved_search - defines whether or not this metric is included in the saved
+#                  search. This only applies to non-peak queries.
+#                  Default: True
+# - summary_index - defines whether or not this metric is included in the
+#                   summary index. This only applies to non-peak queries.
+#                   Default: True
+# - query_config - the dynamic parts of the query inserted into the template.
+#   - tstats_queries - each source type is queried separately, and the results
+#                     are appended. Keys all start with @c mi_ as these are all
+#                     main index queries.
+#                     Per source type, define a dictionary with:
+#     - mi_sourcetype - to which sourcetype do these parameters apply.
+#     - mi_zones - which zone(s) should the query include for this source type.
+#     - mi_zones_field - The name of the field holding the zone to filter on;
+#                        typical values are c_vx_zone and r_vx_zone
+#     - mi_metric - the calculation performed to retrieve the metric from Splunk
+#                   from this source type.
+#     - mi_sample_metric - the statistics function used find the sample size for
+#                          peak queries.
+#   - unit_scale - any scale to apply to the units.  Only defined if needed.
+#   - stat_func - the statistics function used by this metric
+#   - sample_id - the ID of the variable in which the number of samples is
+#                 stored, this maybe the variable in @c sample_metric or a
+#                 variable which already contains this value.
+#   - summary_metric - as per tstat metrics but used in the queries of the
+#                      summary index and saved search. Only defined if needed.
+#   - gentimes_value - the null value used when padding out data for time ranges
+#                      where the data is absent. Only defined if NOT zero.
+METRIC_CONFIGURATION = {
+    JsonKeys.METRIC_REQUESTS_DELIVERED: {
+        'metric_label': lambda: gettext("Request count"),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'count',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will sum all the values in the data set
+            'stat_func': 'sum',
+            'summary_metric': 'sum(requests)',
+        },
+        'units': {}
+    },
+    JsonKeys.METRIC_BYTES_DELIVERED: {
+        'metric_label': lambda: gettext("Bytes delivered"),
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'sum(sc_bytes)',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will sum all the values in the data set
+            'stat_func': 'sum',
+            'summary_metric': 'sum(sc_bytes)',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('B'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bytes')
+        }
+    },
+    JsonKeys.METRIC_PEAK_DELIVERED: {
+        'metric_label': lambda: gettext("Peak throughput (bps)"),
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'sum(sc_bytes)',
+                    # We need to count the number of entries to determine the
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will find the maximum value in the data set
+            'stat_func': 'max',
+            # This should be the identifier used above
+            'sample_id': 's',
+            # Convert from bytes per five minutes to bits per second so multiply by 8/300
+            'unit_scale': '*8/300',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('bps'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bits per second')
+        }
+    },
+    JsonKeys.METRIC_95TH_PERCENTILE_DELIVERED: {
+        'metric_label': lambda: gettext("95th percentile throughput (bps)"),
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'sum(sc_bytes)',
+                    # We need to count the number of entries to determine the
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will find the 95h percentile value in the
+            # data set
+            'stat_func': 'perc95',
+            # This should be the identifier used above
+            'sample_id': 's',
+            # Convert from bytes per five minutes to bits per second so multiply by 8/300
+            'unit_scale': '*8/300',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('bps'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bits per second')
+        }
+    },
+    JsonKeys.METRIC_PEAK_REQUEST_RATE: {
+        'metric_label': lambda: gettext("Peak request rate (rps)"),
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'count',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will find the maximum value in the data set
+            'stat_func': 'max',
+            # We can reuse the normal request count as this is also the number
+            # of samples. Note: Splunk doesn't allow two counts in the same
+            # tstat query so this cannot be simplified.
+            'sample_id': 'x',
+            # Convert from requests in five minutes to requests per second so multiply by 1/300
+            'unit_scale': '/300'
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('rps'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('requests per second')
+        }
+    },
+    JsonKeys.METRIC_UNIQUE_IP_ADDRESS: {
+        'metric_label': lambda: gettext("Unique IP address"),
+        "saved_search": False,
+        'summary_index': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    # A list of all distinct values of ips as a multi-value
+                    # entry to be counted by the timechart metric at the end.
+                    'mi_metric': 'values(c_ip)',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will return a count of all the distinct
+            # values
+            # in the data set
+            'stat_func': 'dc',
+            # Zero can affect the distinct count, NULL won't.
+            'gentimes_value': 'NULL',
+        },
+        'units': {}
+    },
+    JsonKeys.METRIC_PEAK_UNIQUE_CLIENT_IP_ADDRESS: {
+        'metric_label': lambda: gettext("Peak unique IP addresses"),
+        # FIXME this is a dummy config, to be implemented
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'dc(c_ip)',
+                    'mi_sourcetype': 'cdn_del_access',
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+            ],
+            # Statistics function will find the maximum value in the data set
+            'stat_func': 'max',
+            # We can reuse the normal request count as this is also the number
+            # of samples. Note: Splunk doesn't allow two counts in the same
+            # tstat query so this cannot be simplified.
+            'sample_id': 'x',
+        },
+        'units': {}
+    },
+    JsonKeys.METRIC_REQUESTS_TRANSFERRED: {
+        'metric_label': lambda: gettext("Request count"),
+        'saved_search': False,
+        'summary_index': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    'mi_metric': 'count',
+                    'mi_sourcetype': 'cdn_del_access',
+                    # We want the bytes sent to end clients only from these
+                    # logs
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+                {
+                    'mi_metric': 'count',
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # We want the bytes sent to be retrieved from all
+                    # appliances
+                    'mi_zones': ('cdn-origin', 'external', 'cdn'),
+                    'mi_zones_field': 'r_vx_zone',
+                },
+            ],
+            # Statistics function will sum all the values in the data set
+            'stat_func': 'sum',
+        },
+        'units': {}
+    },
+    JsonKeys.METRIC_BYTES_TRANSFERRED: {
+        'metric_label': lambda: gettext("Bytes transferred"),
+        'saved_search': False,
+        'summary_index': False,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    # Sum the bytes sent from the server to the client in the
+                    # delivery access logs.
+                    'mi_metric': 'sum(sc_bytes)',
+                    'mi_sourcetype': 'cdn_del_access',
+                    # We want the bytes sent to end clients only from these
+                    # logs
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+                {
+                    # Sum the bytes sent from the remote server to the local
+                    # server in the delivery acquiry logs.
+                    'mi_metric': 'sum(rs_bytes)',
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # We want the bytes sent to be retrieved from all
+                    # appliances
+                    'mi_zones': ('cdn-origin', 'external', 'cdn'),
+                    'mi_zones_field': 'r_vx_zone',
+                },
+            ],
+            # Statistics function will sum all the values in the data set
+            'stat_func': 'sum',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('B'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bytes')
+        }
+    },
+    JsonKeys.METRIC_PEAK_TRANSFERRED: {
+        'metric_label': lambda: gettext("Peak throughput (bps)"),
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    # Sum the bytes sent from the server to the client in the
+                    # delivery access logs.
+                    'mi_metric': 'sum(sc_bytes)',
+                    # We need to count the number of entries to determine the
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_access',
+                    # We want the bytes sent to end clients only from these
+                    # logs
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+                {
+                    # Sum the bytes sent from the remote server to the local
+                    # server in the delivery acquiry logs.
+                    'mi_metric': 'sum(rs_bytes)',
+                    # We need to count the number of entries to determine the
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # We want the bytes sent to be retrieved from all
+                    # appliances
+                    'mi_zones': ('cdn-origin', 'external', 'cdn'),
+                    'mi_zones_field': 'r_vx_zone',
+                },
+            ],
+            # Statistics function will find the maximum value in the data set
+            'stat_func': 'max',
+            # This should be the identifier used above
+            'sample_id': 's',
+            # Convert from bytes per five minutes to bits per second so multiply by 8/300
+            'unit_scale': '*8/300',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('bps'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bits per second')
+        }
+    },
+    JsonKeys.METRIC_95TH_PERCENTILE_TRANSFERRED: {
+        'metric_label': lambda: gettext("95th percentile throughput (bps)"),
+        "peak_query": True,
+        'query_config': {
+            'tstats_queries': [
+                {
+                    # Sum the bytes sent from the server to the client in the
+                    # delivery access logs.
+                    'mi_metric': 'sum(sc_bytes)',
+                    # We need to count the number of entries to determine the
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_access',
+                    # We want the bytes sent to end clients only from these
+                    # logs
+                    'mi_zones': ('external',),
+                    'mi_zones_field': 'c_vx_zone',
+                },
+                {
+                    # Sum the bytes sent from the remote server to the local
+                    # server in the delivery acquiry logs.
+                    'mi_metric': 'sum(rs_bytes)',
+                    # sample size
+                    'mi_sample_metric': 'count as s',
+                    'mi_sourcetype': 'cdn_del_acquisition',
+                    # We want the bytes sent to be retrieved from all
+                    # appliances
+                    'mi_zones': ('cdn-origin', 'external', 'cdn'),
+                    'mi_zones_field': 'r_vx_zone',
+                },
+            ],
+            # Statistics function will find the 95h percentile value in the data set
+            'stat_func': 'perc95',
+            # This should be the identifier used above
+            'sample_id': 's',
+            # Convert from bytes per five minutes to bits per second so multiply by 8/300
+            'unit_scale': '*8/300',
+        },
+        'units': {
+            JsonKeys.METRIC_UNITS_SHORT: lambda: gettext('bps'),
+            JsonKeys.METRIC_UNITS_LONG: lambda: gettext('bits per second')
+        }
+    }
+}
